@@ -1,41 +1,48 @@
 ﻿#include<iostream>
 #include<string>
+#include<fstream>
 #include"common.h"
 
-
+#define Compile_chapter 2
+#define USE_FILE 1
 int main()
 {
-
-
-	//return 1;
-	/*
-	{ 	//chapter 1
+#if Compile_chapter == 1 //chapter 1
+	{
 		using namespace Lox;
 		Chunk chunk{};
-		chunk.write(OpCode::OP_CONSTANT, 123);
+		chunk.write(OpCode::CONSTANT, 123);
 		chunk.write(chunk.addConstant(1.2), 123);
-		chunk.write(OpCode::OP_NEGATE, 123);
-		chunk.write(OpCode::OP_RETURN,123);
-	//	Debug::disassembleChunk(chunk, "test chunk");
+		chunk.write(OpCode::NEGATE, 123);
+		chunk.write(OpCode::RETURN, 123);
+		//	Debug::disassembleChunk(chunk, "test chunk");
 		VM vm{ chunk };
 		vm.interpret();
 	}
-	*/
-
-	 { 	//chapter 2
+#elif Compile_chapter == 2 //chapter 2
+	{
 		std::string input;
+#if USE_FILE
+		if (std::ifstream fs{ "./script.lox", std::ios::binary }) {
+			std::string s(std::istreambuf_iterator<char>(fs), {});
+			input = std::move(s);
+			fs.close();
+		}
+		std::cout << input << "\n\n";
+#else
 		std::getline(std::cin, input);
+#endif
 		using namespace Lox;
-		Chunk chunk{};
-		//	Debug::disassembleChunk(chunk, "test chunk");
-		VM vm{ chunk };
+		Chunk ck; //Debug::disassembleChunk(chunk, "test chunk");
+		VM vm(ck);
 		vm.compile(input.c_str());
 		vm.interpret();
 	}
-
-/*	int a = 1, b = 0;  // get ++ advance
-	int c = a++ + b;
-	std::cout << "c:" << c;
-	*/
+#endif
+#if Compile_chapter == -1
+	int a = 2, b;
+	b = a++;
+	std::cout << "a:" << a << " b:" << b;
+#endif
 	return 1;
 }

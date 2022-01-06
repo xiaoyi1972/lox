@@ -34,17 +34,6 @@ namespace Lox {
 	using code_t = std::variant<OpCode, std::size_t>;
 	using value_t = std::variant<double, bool, std::string, std::nullptr_t>;
 
-	inline std::ostream& operator<<(std::ostream& out, const value_t& value) {
-		std::visit(overloaded{
-			[&](double arg) {out << "num| " << arg; },
-			[&](bool arg) {out << "bool| " << (arg ? "true" : "false"); },
-			[&](const std::string& arg) {out << "str| " << arg; },
-			[&](std::nullptr_t arg) {out << "none| nil"; }
-			}, value
-		);
-		return out;
-	}
-
 	struct Chunk {
 		void write(const code_t& byte, std::size_t line) {
 			code.emplace_back(byte);
@@ -73,8 +62,11 @@ namespace Lox {
 		// keywords.
 		kw_and, kw_class, kw_else, kw_false, fun, kw_for, kw_if, nil, kw_or,
 		print, kw_return, super, kw_this, kw_true, var, kw_while,
-		//custom
+		//extra
 		elif, kw_continue, kw_break,
+		plus_equal, minus_equal, star_equal, slash_equal, mod_equal,
+		inc, dec,
+		//default
 		error, eof
 	};
 
@@ -83,4 +75,32 @@ namespace Lox {
 		std::string_view lexem;
 		int line;
 	};
+}
+
+namespace std {
+	inline std::ostream& operator<<(std::ostream& out, const Lox::value_t& value) {
+		std::visit(overloaded{
+			[&](double arg) {out << "num| " << arg; },
+			[&](bool arg) {out << "bool| " << (arg ? "true" : "false"); },
+			[&](const std::string& arg) {out << "str| " << arg; },
+			[&](std::nullptr_t arg) {out << "none| nil"; }
+			}, value
+		);
+		return out;
+	}
+
+	inline std::string to_string(const Lox::value_t& value) {
+		return std::visit(overloaded{
+		[&](double arg) {
+				std::string str = std::to_string(arg);
+				str.erase(str.find_last_not_of('0') + 1, std::string::npos);
+				str.pop_back();
+				return str;
+			},
+		[&](bool arg) {return std::string{(arg ? "true" : "false")}; },
+		[&](const std::string& arg) {return arg; },
+		[&](std::nullptr_t arg) {return std::string{}; }
+			}, value
+		);
+	}
 }

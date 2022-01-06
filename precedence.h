@@ -1,7 +1,7 @@
 #pragma once
 #include "token.h"
 #include<array>
-namespace  Lox{
+namespace  Lox {
 	enum struct Precedence {
 		NONE,
 		ASSIGNMENT,  // =
@@ -24,33 +24,17 @@ namespace  Lox{
 		Precedence precedence;
 	};
 
-	template<TokenType type, class T> struct EnumForType;
+	template<TokenType type, class T> struct EnumForType {
+		static constexpr ParseRule<T> value{ nullptr,nullptr,Precedence::NONE };
+	};
 	template<class T> struct EnumForType<TokenType::left_paren, T> {
 		static constexpr ParseRule<T> value{ &T::grouping,nullptr,Precedence::NONE };
-	};
-	template<class T> struct EnumForType<TokenType::right_paren, T> {
-		static constexpr ParseRule<T> value{ nullptr,nullptr,Precedence::NONE };
-	};
-	template<class T> struct EnumForType<TokenType::left_brace, T> {
-		static constexpr ParseRule<T> value{ nullptr,nullptr,Precedence::NONE };
-	};
-	template<class T> struct EnumForType<TokenType::right_brace, T> {
-		static constexpr ParseRule<T> value{ nullptr,nullptr,Precedence::NONE };
-	};
-	template<class T> struct EnumForType<TokenType::comma, T> {
-		static constexpr ParseRule<T> value{ nullptr,nullptr,Precedence::NONE };
-	};
-	template<class T> struct EnumForType<TokenType::dot, T> {
-		static constexpr ParseRule<T> value{ nullptr,nullptr,Precedence::NONE };
 	};
 	template<class T> struct EnumForType<TokenType::minus, T> {
 		static constexpr ParseRule<T> value{ &T::unary,&T::binary,Precedence::TERM };
 	};
 	template<class T> struct EnumForType<TokenType::plus, T> {
 		static constexpr ParseRule<T> value{ nullptr,&T::binary,Precedence::TERM };
-	};
-	template<class T> struct EnumForType<TokenType::semicolon, T> {
-		static constexpr ParseRule<T> value{ nullptr,nullptr,Precedence::NONE };
 	};
 	template<class T> struct EnumForType<TokenType::slash, T> {
 		static constexpr ParseRule<T> value{ nullptr,&T::binary,Precedence::FACTOR };
@@ -63,9 +47,6 @@ namespace  Lox{
 	};
 	template<class T> struct EnumForType<TokenType::bang_equal, T> {
 		static constexpr ParseRule<T> value{ nullptr,&T::binary,Precedence::EQUALITY };
-	};
-	template<class T> struct EnumForType<TokenType::equal, T> {
-		static constexpr ParseRule<T> value{ nullptr,nullptr,Precedence::NONE };
 	};
 	template<class T> struct EnumForType<TokenType::equal_equal, T> {
 		static constexpr ParseRule<T> value{ nullptr,&T::binary,Precedence::EQUALITY };
@@ -94,23 +75,8 @@ namespace  Lox{
 	template<class T> struct EnumForType<TokenType::kw_and, T> {
 		static constexpr ParseRule<T> value{ nullptr, &T::and_,Precedence::AND };
 	};
-	template<class T> struct EnumForType<TokenType::kw_class, T> {
-		static constexpr ParseRule<T> value{ nullptr,nullptr,Precedence::NONE };
-	};
-	template<class T> struct EnumForType<TokenType::kw_else, T> {
-		static constexpr ParseRule<T> value{ nullptr,nullptr,Precedence::NONE };
-	};
 	template<class T> struct EnumForType<TokenType::kw_false, T> {
 		static constexpr ParseRule<T> value{ &T::literal,nullptr,Precedence::NONE };
-	};
-	template<class T> struct EnumForType<TokenType::kw_for, T> {
-		static constexpr ParseRule<T> value{ nullptr,nullptr,Precedence::NONE };
-	};
-	template<class T> struct EnumForType<TokenType::fun, T> {
-		static constexpr ParseRule<T> value{ nullptr,nullptr,Precedence::NONE };
-	};
-	template<class T> struct EnumForType<TokenType::kw_if, T> {
-		static constexpr ParseRule<T> value{ nullptr,nullptr,Precedence::NONE };
 	};
 	template<class T> struct EnumForType<TokenType::nil, T> {
 		static constexpr ParseRule<T> value{ &T::literal,nullptr,Precedence::NONE };
@@ -118,45 +84,17 @@ namespace  Lox{
 	template<class T> struct EnumForType<TokenType::kw_or, T> {
 		static constexpr ParseRule<T> value{ nullptr, &T::or_,Precedence::OR };
 	};
-	template<class T> struct EnumForType<TokenType::print, T> {
-		static constexpr ParseRule<T> value{ nullptr,nullptr,Precedence::NONE };
-	};
-	template<class T> struct EnumForType<TokenType::kw_return, T> {
-		static constexpr ParseRule<T> value{ nullptr,nullptr,Precedence::NONE };
-	};
-	template<class T> struct EnumForType<TokenType::super, T> {
-		static constexpr ParseRule<T> value{ nullptr,nullptr,Precedence::NONE };
-	};
-	template<class T> struct EnumForType<TokenType::kw_this, T> {
-		static constexpr ParseRule<T> value{ nullptr,nullptr,Precedence::NONE };
-	};
 	template<class T> struct EnumForType<TokenType::kw_true, T> {
 		static constexpr ParseRule<T> value{ &T::literal,nullptr,Precedence::NONE };
 	};
-	template<class T> struct EnumForType<TokenType::var, T> {
-		static constexpr ParseRule<T> value{ nullptr,nullptr,Precedence::NONE };
+	template<class T> struct EnumForType<TokenType::inc, T> {
+		static constexpr ParseRule<T> value{ &T::unary,&T::binary,Precedence::UNARY };
 	};
-	template<class T> struct EnumForType<TokenType::kw_while, T> {
-		static constexpr ParseRule<T> value{ nullptr,nullptr,Precedence::NONE };
-	};
-	template<class T> struct EnumForType<TokenType::error, T> {
-		static constexpr ParseRule<T> value{ nullptr,nullptr,Precedence::NONE };
-	};
-	template<class T> struct EnumForType<TokenType::eof, T> {
-		static constexpr ParseRule<T> value{ nullptr,nullptr,Precedence::NONE };
-	};
-	template<class T> struct EnumForType<TokenType::elif, T> {
-		static constexpr ParseRule<T> value{ nullptr,nullptr,Precedence::NONE };
-	};
-	template<class T> struct EnumForType<TokenType::kw_continue, T> {
-		static constexpr ParseRule<T> value{ nullptr,nullptr,Precedence::NONE };
-	};
-	template<class T> struct EnumForType<TokenType::kw_break, T> {
-		static constexpr ParseRule<T> value{ nullptr,nullptr,Precedence::NONE };
-	};
+
 	template<class T, std::size_t...Is>
-	std::array<ParseRule<T>, sizeof...(Is)> ParseRuleHelp(std::index_sequence<Is...> const&)
-	{
+	std::array<ParseRule<T>, sizeof...(Is)> ParseRuleHelp(std::index_sequence<Is...> const&) {
 		return { EnumForType<static_cast<TokenType>(Is),T>::value... };
 	}
+
+	using allTokenType = std::make_index_sequence<static_cast<size_t>(TokenType::eof) + 1>;
 }

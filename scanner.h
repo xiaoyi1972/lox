@@ -99,11 +99,10 @@ namespace Lox {
 
 		Token number() {
 			while (std::isdigit(peek())) advance();
-			if (peek() == '.' && std::isdigit(peekNext())){		// Look for a fractional part.
+			if (peek() == '.' && std::isdigit(peekNext())) {		// Look for a fractional part.
 				advance();	// Consume the ".".
 				while (std::isdigit(peek())) advance();
 			}
-
 			return makeToken(TokenType::number);
 		}
 
@@ -186,10 +185,10 @@ namespace Lox {
 			case ';': return makeToken(TokenType::semicolon);
 			case ',': return makeToken(TokenType::comma);
 			case '.': return makeToken(TokenType::dot);
-			case '-': return makeToken(TokenType::minus);
-			case '+': return makeToken(TokenType::plus);
-			case '/': return makeToken(TokenType::slash);
-			case '*': return makeToken(TokenType::star);
+			case '-': return makeToken(match('=') ? TokenType::minus_equal : match('-') ? TokenType::dec : TokenType::minus);
+			case '+': return makeToken(match('=') ? TokenType::plus_equal : match('+') ? TokenType::inc : TokenType::plus);
+			case '/': return makeToken(match('=') ? TokenType::slash_equal : TokenType::slash);
+			case '*': return makeToken(match('=') ? TokenType::star_equal : TokenType::star);
 			case '!':return makeToken(match('=') ? TokenType::bang_equal : TokenType::bang);
 			case '=':return makeToken(match('=') ? TokenType::equal_equal : TokenType::equal);
 			case '<':return makeToken(match('=') ? TokenType::less_equal : TokenType::less);
