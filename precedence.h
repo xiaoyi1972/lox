@@ -28,7 +28,7 @@ namespace  Lox {
 		static constexpr ParseRule<T> value{ nullptr,nullptr,Precedence::NONE };
 	};
 	template<class T> struct EnumForType<TokenType::left_paren, T> {
-		static constexpr ParseRule<T> value{ &T::grouping,nullptr,Precedence::NONE };
+		static constexpr ParseRule<T> value{ &T::grouping,&T::call,Precedence::CALL };
 	};
 	template<class T> struct EnumForType<TokenType::minus, T> {
 		static constexpr ParseRule<T> value{ &T::unary,&T::binary,Precedence::TERM };
@@ -90,6 +90,9 @@ namespace  Lox {
 	template<class T> struct EnumForType<TokenType::inc, T> {
 		static constexpr ParseRule<T> value{ &T::unary,&T::binary,Precedence::UNARY };
 	};
+	template<class T> struct EnumForType<TokenType::dec, T> {
+		static constexpr ParseRule<T> value{ &T::unary,&T::binary,Precedence::UNARY };
+	};
 
 	template<class T, std::size_t...Is>
 	std::array<ParseRule<T>, sizeof...(Is)> ParseRuleHelp(std::index_sequence<Is...> const&) {
@@ -97,4 +100,5 @@ namespace  Lox {
 	}
 
 	using allTokenType = std::make_index_sequence<static_cast<size_t>(TokenType::eof) + 1>;
+	template<class T> using rule_t = decltype (ParseRuleHelp<T>(allTokenType{}));
 }

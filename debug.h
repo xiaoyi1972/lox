@@ -1,6 +1,7 @@
 #pragma once
 #include <iostream>
 #include"token.h"
+
 namespace Lox {
 	struct Debug {
 		static std::size_t simpleInstruction(const char* name, std::size_t offset) {
@@ -17,7 +18,7 @@ namespace Lox {
 
 		static std::size_t byteInstruction(const char* name, Chunk& chunk, int offset) {
 			auto slot = std::get<std::size_t>(chunk.code[offset + 1]);
-			std::cout << string_format("%-17s %4d '", name, slot);
+			std::cout << string_format("%-17s %4d \n", name, slot);
 			return offset + 2;
 		}
 
@@ -25,6 +26,13 @@ namespace Lox {
 			Chunk& chunk, int offset) {
 			auto jump = std::get<size_t>(chunk.code[offset + 1]);
 			std::cout << string_format("%-17s %4d -> %d\n", name, offset, offset + 2 + sign * jump);
+			return offset + 2;
+		}
+
+		static int incInstruction(const char* name, Chunk& chunk, int offset) {
+			auto arg = std::get<std::size_t>(chunk.code[offset + 1]);
+			auto prefix = (arg & 2) >> 1, neg = arg & 1;
+			std::cout << string_format("%-17s %4s %s\n", name, neg ? "-" : "+", prefix ? "prefix" : "postfix");
 			return offset + 2;
 		}
 
@@ -62,6 +70,9 @@ namespace Lox {
 				case OpCode::MULTIPLY:return simpleInstruction("OP_MULTIPLY", offset);
 				case OpCode::DIVIDE:return simpleInstruction("OP_DIVIDE", offset);
 				case OpCode::NOT:return simpleInstruction("OP_NOT", offset);
+				case OpCode::INC:return incInstruction("OP_INC", chunk, offset);
+				case OpCode::DEC:return constantInstruction("OP_DEC", chunk, offset);
+				case OpCode::CALL: return byteInstruction("OP_CALL", chunk, offset);
 				default:
 					std::cout << "unknown opcode" << static_cast<int>(std::get<OpCode>(instruction));
 					return offset + 1;

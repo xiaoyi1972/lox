@@ -3,8 +3,8 @@
 #include<fstream>
 #include"common.h"
 
-#define Compile_chapter 2
-#define USE_FILE 1
+#define Compile_chapter 3
+#define USE_FILE 3
 int main()
 {
 #if Compile_chapter == 1 //chapter 1
@@ -35,8 +35,25 @@ int main()
 		using namespace Lox;
 		Chunk ck; //Debug::disassembleChunk(chunk, "test chunk");
 		VM vm(ck);
-		vm.compile(input.c_str());
-		vm.interpret();
+		//vm.compile(input.c_str());
+		vm.interpret(input.c_str());
+	}
+#elif Compile_chapter == 3 //chapter 2
+	{
+		std::string input;
+#if USE_FILE
+		if (std::ifstream fs{ "./script.lox", std::ios::binary }) {
+			std::string s(std::istreambuf_iterator<char>(fs), {});
+			input = std::move(s);
+			fs.close();
+}
+		std::cout << input << "\n\n";
+#else
+		std::getline(std::cin, input);
+#endif
+		using namespace Lox;
+		VM vm;
+		vm.interpret(input.c_str());
 	}
 #endif
 #if Compile_chapter == -1

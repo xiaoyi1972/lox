@@ -15,11 +15,21 @@ namespace Lox {
 		Local(const Token& _name, int _depth) :name(_name), depth(_depth) {}
 	};
 
+	struct CallFrame {
+		Function* func = nullptr;
+		std::size_t  ip = 0;
+		std::size_t  slots = 0;
+	};
+
 	struct Compiler {
+		Compiler* enclosing;
+		std::shared_ptr<Function> func;
+		FunctionType type;
 		std::vector<Local> locals;
 		int localCount;
 		int scopeDepth;
-		Compiler() :localCount(0), scopeDepth(0) {}
+		Compiler(Compiler* previous = nullptr) :enclosing(previous == nullptr ? this : previous),
+			func(new Function), type(FunctionType::SCRIPT), localCount(0), scopeDepth(0) {}
 	};
 
 	struct VM {
@@ -27,20 +37,25 @@ namespace Lox {
 			OK, COMPILE_ERROR, RUNTIME_ERROR
 		};
 
-		using rule_t = decltype (ParseRuleHelp<VM>(allTokenType{}));
-		Chunk& chunk;
-		Chunk compilingChunk;
-		std::size_t ip, stackTop;
-		int innermostLoopStart = -1, innermostLoopScopeDepth = 0, innermostLoopSelect = 0;
+		struct { int start = -1; int scopeDepth = 0; int select = 0; } innermostLoop;
+		std::size_t stackTop;
+		static constexpr std::size_t FRAMES_MAX = 64;
+		std::array<CallFrame, FRAMES_MAX> frames{};
+		int frameCount = 0;
 		std::vector<value_t> stack;
 		Parser parser;
 		Scanner scanner{ nullptr };
 		std::unordered_map<std::string_view, value_t> globals;
-		Compiler compiler;
-		rule_t rules;
+		Compiler rootCompiler;
+		Compiler* current = &rootCompiler;
+		rule_t<VM>  rules;
 		std::optional<size_t> previousOp;
-		int startInc = -1, endInc = -1;
-		VM(Chunk& _chunk) :chunk(_chunk), ip(0), stackTop(0), rules(ParseRuleHelp<VM>(allTokenType{})) {}
+
+		VM() :stackTop(0), rules(ParseRuleHelp<VM>(allTokenType{})) {}
+
+		Chunk& currentChunk() {
+			return current->func->chunk;
+		}
 
 		auto& getRule(TokenType type) {
 			return rules[static_cast<std::size_t>(type)];
@@ -86,9 +101,9 @@ namespace Lox {
 				(this->*infixRule)(canAssign);
 			}
 
-
 			if (canAssign &&
-				match(TokenType::equal, TokenType::plus_equal, TokenType::minus_equal, TokenType::star_equal, TokenType::slash_equal)) {
+				match(TokenType::equal, TokenType::plus_equal, TokenType::minus_equal,
+					TokenType::star_equal, TokenType::slash_equal)) {
 				error("Invalid assignment target.");
 			}
 		}
@@ -137,29 +152,16 @@ namespace Lox {
 			TokenType operatorType = parser.previous.type;
 			auto& rule = getRule(operatorType);
 
-			if (operatorType == TokenType::inc) {
+			if (operatorType == TokenType::inc || operatorType == TokenType::dec) {
 				if (previousOp) {
-					auto get = std::get<OpCode>(compilingChunk.code[*previousOp]);
-					bool isVariable = true;
-					OpCode set;
-					switch (get) {
-					case OpCode::GET_GLOBAL: set = OpCode::SET_GLOBAL; break;
-					case OpCode::GET_LOCAL: set = OpCode::SET_LOCAL; break;
-					default: isVariable = false;
-					}
+					auto get = std::get<OpCode>(currentChunk().code[*previousOp]);
+					bool isVariable = (get == OpCode::GET_GLOBAL || get == OpCode::GET_LOCAL);
 					if (isVariable) {
-						auto arg = compilingChunk.code[*previousOp + 1];
-						startInc = compilingChunk.code.size();
-						emitConstant(1.);
-						emitBytes(OpCode::ADD, set, arg);
-						emitConstant(1.);
-						emitByte(OpCode::SUBTRACT);
-						endInc = compilingChunk.code.size();
+						emitBytes(OpCode::INC, 0 + (operatorType == TokenType::dec ? 1 : 0));
 					}
 					else error("Invalid assignment target.");
 				}
 			}
-
 			else parsePrecedence((Precedence)(static_cast<int>(rule.precedence) + 1));
 
 			switch (operatorType) {
@@ -176,15 +178,10 @@ namespace Lox {
 			default: return; // Unreachable.
 			}
 
-			if (startInc != -1 && endInc != -1) {
-				//std::rotate(compilingChunk.code.begin() + startInc, compilingChunk.code.begin() + endInc, compilingChunk.code.end());
-				startInc = endInc = -1;
-			}
 		}
 
 		void unary(bool canAssign) {
 			TokenType operatorType = parser.previous.type;
-
 
 			//expression;	// Compile the operand.
 			parsePrecedence(Precedence::UNARY);
@@ -193,19 +190,12 @@ namespace Lox {
 			case TokenType::bang: emitByte(OpCode::NOT); break;
 			case TokenType::minus: emitByte(OpCode::NEGATE); break;
 			case TokenType::inc:
+			case TokenType::dec:
 				if (previousOp) {
-					auto get = std::get<OpCode>(compilingChunk.code[*previousOp]);
-					bool isVariable = true;
-					OpCode set;
-					switch (get) {
-					case OpCode::GET_GLOBAL: set = OpCode::SET_GLOBAL; break;
-					case OpCode::GET_LOCAL: set = OpCode::SET_LOCAL; break;
-					default: isVariable = false;
-					}
+					auto get = std::get<OpCode>(currentChunk().code[*previousOp]);
+					bool isVariable = (get == OpCode::GET_GLOBAL || get == OpCode::GET_LOCAL);
 					if (isVariable) {
-						auto arg = compilingChunk.code[*previousOp + 1];
-						emitConstant(1.);
-						emitBytes(OpCode::ADD, set, arg);
+						emitBytes(OpCode::INC, 2 + (operatorType == TokenType::dec ? 1 : 0));
 					}
 					else error("Invalid assignment target.");
 				}
@@ -215,7 +205,7 @@ namespace Lox {
 		}
 
 		code_t makeConstant(const value_t& value) {
-			auto constant = compilingChunk.addConstant(value);
+			auto constant = currentChunk().addConstant(value);
 			if (constant > UINT8_MAX) {
 				error("Too many constants in one chunk.");
 				return 0;
@@ -231,8 +221,93 @@ namespace Lox {
 			parsePrecedence(Precedence::ASSIGNMENT);
 		}
 
+		void funDeclaration() {
+			auto global = parseVariable("Expect function name.");
+			markInitialized();
+			function(FunctionType::FUNCTION);
+			defineVariable(global);
+		}
+
+		void call(bool canAssign) {
+			auto argCount = argumentList();
+			emitBytes(OpCode::CALL, argCount);
+		}
+
+		bool call(Function* func, int argCount) {
+			if (argCount != func->arity) {
+				runtimeError("Expected %d arguments but got %d.", func->arity, argCount);
+				return false;
+			}
+
+			if (frameCount == FRAMES_MAX) {
+				runtimeError("Stack overflow.");
+				return false;
+			}
+
+			CallFrame* frame = &frames[frameCount++];
+			frame->func = func;
+			frame->ip = 0;
+			frame->slots = stackTop - argCount;
+			return true;
+		}
+
+		bool callValue(value_t& callee, int argCount) {
+			if (std::holds_alternative<std::shared_ptr<Function>>(callee)) {
+				return call(std::get<std::shared_ptr<Function>>(callee).get(), argCount);
+			}
+			runtimeError("Can only call functions and classes.");
+			return false;
+		}
+
+		std::size_t argumentList() {
+			std::size_t argCount = 0;
+			if (!check(TokenType::right_paren)) {
+				do {
+					expression();
+					if (argCount == 255) {
+						error("Can't have more than 255 arguments.");
+					}
+					argCount++;
+				} while (match(TokenType::comma));
+			}
+			consume(TokenType::right_paren, "Expect ')' after arguments.");
+			return argCount;
+		}
+
+		void function(FunctionType type) {
+			Compiler compiler(current);
+			current = &compiler;
+			compiler.type = type;
+			if (type != FunctionType::SCRIPT) {
+				current->func->name = parser.previous.lexem;
+			}
+
+			beginScope();
+
+			consume(TokenType::left_paren, "Expect '(' after function name.");
+			if (!check(TokenType::right_paren)) {
+				do {
+					current->func->arity++;
+					if (current->func->arity > 255) {
+						errorAtCurrent("Can't have more than 255 parameters.");
+					}
+					auto constant = parseVariable("Expect parameter name.");
+					defineVariable(constant);
+				} while (match(TokenType::comma));
+			}
+			consume(TokenType::right_paren, "Expect ')' after parameters.");
+			consume(TokenType::left_brace, "Expect '{' before function body.");
+			block();
+
+			Function* func = endCompiler();
+			emitBytes(OpCode::CONSTANT, makeConstant(compiler.func));
+		}
+
 		void declaration() {
-			if (match(TokenType::var)) {
+			if (match(TokenType::fun)) {
+				funDeclaration();
+			}
+			else	if (match(TokenType::var)) {
 				varDeclaration();
 			}
 			else {
@@ -244,16 +319,16 @@ namespace Lox {
 		code_t parseVariable(const char* errorMessage) {
 			consume(TokenType::identifier, errorMessage);
 			declareVariable();
-			if (compiler.scopeDepth > 0) return 0;
+			if (current->scopeDepth > 0) return 0;
 			return identifierConstant(parser.previous);
 		}
 
 		void declareVariable() {
-			if (compiler.scopeDepth == 0) return;
+			if (current->scopeDepth == 0) return;
 			auto& name = parser.previous;
-			for (int i = compiler.localCount - 1; i >= 0; i--) {
-				auto& local = compiler.locals[i];
-				if (local.depth != -1 && local.depth < compiler.scopeDepth) {
+			for (int i = current->localCount - 1; i >= 0; i--) {
+				auto& local = current->locals[i];
+				if (local.depth != -1 && local.depth < current->scopeDepth) {
 					break;
 				}
 
@@ -269,16 +344,22 @@ namespace Lox {
 		}
 
 		void addLocal(const Token& name) {
-			/*if (compiler.localCount == 50) {
+#ifdef LIMIT_LOCAL_VARIABLE_COUNT
+			if (current->localCount == 50) {
 				error("Too many local variables in function.");
 				return;
-			}*/
-			//auto &local = compiler.locals[compiler.localCount++];
-			compiler.locals.emplace_back(name, -1);
-			compiler.localCount++;
-			/*local.name = name;
+			}
+			auto& local = current->locals[current->localCount++];
+#endif
+
+			current->locals.emplace_back(name, -1);
+			current->localCount++;
+
+#ifdef LIMIT_LOCAL_VARIABLE_COUNT
+			local.name = name;
 			local.depth = -1;
-			local.depth = compiler.scopeDepth;*/
+			local.depth = current->scopeDepth;
+#endif
 		}
 
 		code_t identifierConstant(const Token& name) {
@@ -304,7 +385,7 @@ namespace Lox {
 		}
 
 		void defineVariable(const code_t& global) {
-			if (compiler.scopeDepth > 0) {
+			if (current->scopeDepth > 0) {
 				markInitialized();
 				return;
 			}
@@ -312,7 +393,8 @@ namespace Lox {
 		}
 
 		void markInitialized() {
-			compiler.locals[compiler.localCount - 1].depth = compiler.scopeDepth;
+			if (current->scopeDepth == 0) return;
+			current->locals[current->localCount - 1].depth = current->scopeDepth;
 		}
 
 		void variable(bool canAssign) {
@@ -320,8 +402,8 @@ namespace Lox {
 		}
 
 		int resolveLocal(const Token& name) {
-			for (int i = compiler.localCount - 1; i >= 0; i--) {
-				auto& local = compiler.locals[i];
+			for (int i = current->localCount - 1; i >= 0; i--) {
+				auto& local = current->locals[i];
 				if (name.lexem == local.name.lexem) {
 					if (local.depth == -1) {
 						error("Can't read local variable in its own initializer.");
@@ -337,13 +419,11 @@ namespace Lox {
 			code_t getOp, setOp;
 			if (auto localIndex = resolveLocal(name); localIndex != -1) {
 				arg = static_cast<std::size_t>(localIndex);
-				getOp = OpCode::GET_LOCAL;
-				setOp = OpCode::SET_LOCAL;
+				getOp = OpCode::GET_LOCAL, setOp = OpCode::SET_LOCAL;
 			}
 			else {
 				arg = identifierConstant(name);
-				getOp = OpCode::GET_GLOBAL;
-				setOp = OpCode::SET_GLOBAL;
+				getOp = OpCode::GET_GLOBAL, setOp = OpCode::SET_GLOBAL;
 			}
 
 			if (canAssign && match(TokenType::equal)) {
@@ -363,19 +443,9 @@ namespace Lox {
 				}
 				emitBytes(setOp, arg);
 			}
-			/*else if (match(TokenType::plus)) {
-				//advance();
-				expression();
-				emitBytes(getOp, arg);
-			}*/
 			else {
-				// expression();
-				 /*advance();
-				 auto& infixRule = getRule(parser.previous.type).infix;
-				 (this->*infixRule)(canAssign);*/
 				emitBytes(getOp, arg);
 			}
-			//emitBytes(OpCode::GET_GLOBAL, arg);
 		}
 
 		void synchronize() {
@@ -409,6 +479,9 @@ namespace Lox {
 			else if (match(TokenType::kw_if)) {
 				ifStatement();
 			}
+			else if (match(TokenType::kw_return)) {
+				returnStatement();
+			}
 			else if (match(TokenType::kw_while)) {
 				whileStatement();
 			}
@@ -425,6 +498,20 @@ namespace Lox {
 			}
 			else {
 				expressionStatement();
+			}
+		}
+
+		void returnStatement() {
+			if (current->type == FunctionType::SCRIPT) {
+				error("Can't return from top-level code.");
+			}
+			if (match(TokenType::semicolon)) {
+				emitReturn();
+			}
+			else {
+				expression();
+				consume(TokenType::semicolon, "Expect ';' after return value.");
+				emitByte(OpCode::RETURN);
 			}
 		}
 
@@ -452,117 +539,110 @@ namespace Lox {
 			beginScope();
 			consume(TokenType::left_paren, "Expect '(' after 'for'.");
 
-			if (match(TokenType::semicolon)) { // consume(TokenType::semicolon, "Expect ';'.");
+			if (match(TokenType::semicolon)) {
+				// consume(TokenType::semicolon, "Expect ';'.");
 				// No initializer.
 			}
-			else if (match(TokenType::var)) {
-				varDeclaration();
-			}
-			else {
-				expressionStatement();
-			}
+			else if (match(TokenType::var)) { varDeclaration(); }
+			else { expressionStatement(); }
 
-			auto surroundingLoopStart = innermostLoopStart;
-			auto surroundingLoopScopeDepth = innermostLoopScopeDepth;
-			auto surroundingLoopSelect = innermostLoopSelect;
-			innermostLoopStart = compilingChunk.code.size();
-			innermostLoopScopeDepth = compiler.scopeDepth;
+			decltype (innermostLoop) surroundingLoop;
+			std::memcpy(&surroundingLoop, &innermostLoop, sizeof innermostLoop);
+			innermostLoop.start = currentChunk().code.size();
+			innermostLoop.scopeDepth = current->scopeDepth;
 
 			int exitJump = -1;
 			if (!match(TokenType::semicolon)) {
 				expression();
 				consume(TokenType::semicolon, "Expect ';' after loop condition.");
 				exitJump = emitJump(OpCode::JUMP_IF_FALSE); // Jump out of the loop if the condition is false.
-				innermostLoopSelect = exitJump - 1;
+				innermostLoop.select = exitJump - 1;
 				emitByte(OpCode::POP); // Condition.
 			}
 
 			if (!match(TokenType::right_paren)) {
 				int bodyJump = emitJump(OpCode::JUMP);
-				std::size_t incrementStart = compilingChunk.code.size();
+				std::size_t incrementStart = currentChunk().code.size();
 				expression();
 				emitByte(OpCode::POP);
 				consume(TokenType::right_paren, "Expect ')' after for clauses.");
 
-				emitLoop(innermostLoopStart);
-				innermostLoopStart = incrementStart;
+				emitLoop(innermostLoop.start);
+				innermostLoop.start = incrementStart;
 				patchJump(bodyJump);
 			}
 
 			statement();
 
-			emitLoop(innermostLoopStart);
+			emitLoop(innermostLoop.start);
 
 			if (exitJump != -1) {
 				patchJump(exitJump);
 				emitByte(OpCode::POP);	// Condition.
 			}
 
-			innermostLoopStart = surroundingLoopStart;
-			innermostLoopScopeDepth = surroundingLoopScopeDepth;
-			innermostLoopSelect = surroundingLoopStart;
+			std::memcpy(&innermostLoop, &surroundingLoop, sizeof innermostLoop);
 			endScope();
 		}
 
 		void continueStatement() {
-			if (innermostLoopStart == -1) {
+			if (innermostLoop.start == -1) {
 				error("Can't use 'continue' outside of a loop");
 			}
 			consume(TokenType::semicolon, "Expect ';' after 'continue'.");
-			for (auto i = compiler.localCount - 1;
-				i >= 0 && compiler.locals[i].depth > innermostLoopScopeDepth;
+			for (auto i = current->localCount - 1;
+				i >= 0 && current->locals[i].depth > innermostLoop.scopeDepth;
 				--i) {
 				emitByte(OpCode::POP);
 			}
-			emitLoop(innermostLoopStart); // Jump to top of current innermost loop.
+			emitLoop(innermostLoop.start); // Jump to top of current innermost loop.
 		}
 
 		void breakStatement() {
-			if (innermostLoopStart == -1) {
+			if (innermostLoop.start == -1) {
 				error("Can't use 'break' outside of a loop");
 			}
 			consume(TokenType::semicolon, "Expect ';' after 'break'.");
-			for (auto i = compiler.localCount - 1;
-				i >= 0 && compiler.locals[i].depth > innermostLoopScopeDepth;
+			for (auto i = current->localCount - 1;
+				i >= 0 && current->locals[i].depth > innermostLoop.scopeDepth;
 				--i) {
 				emitByte(OpCode::POP);
 			}
-			if (innermostLoopSelect > 0) {
+
+			if (innermostLoop.select > 0) {
 				emitByte(OpCode::FALSE);
-				emitLoop(innermostLoopSelect);
+				emitLoop(innermostLoop.select);
 			}
 		}
 
 		void whileStatement() {
-			auto surroundingLoopStart = innermostLoopStart;
-			auto surroundingLoopScopeDepth = innermostLoopScopeDepth;
-			auto surroundingLoopSelect = innermostLoopSelect;
-			innermostLoopStart = compilingChunk.code.size();
-			innermostLoopScopeDepth = compiler.scopeDepth;
+
+			decltype (innermostLoop) surroundingLoop;
+			std::memcpy(&surroundingLoop ,&innermostLoop, sizeof innermostLoop);
+			innermostLoop.start = currentChunk().code.size();
+			innermostLoop.scopeDepth = current->scopeDepth;
 
 			consume(TokenType::left_paren, "Expect '(' after 'while'.");
 			expression();
 			consume(TokenType::right_paren, "Expect ')' after condition.");
 
 			int exitJump = emitJump(OpCode::JUMP_IF_FALSE);
-			innermostLoopSelect = exitJump - 1;
+			innermostLoop.select = exitJump - 1;
 			emitByte(OpCode::POP);
 			statement();
 
-			emitLoop(innermostLoopStart);
+			emitLoop(innermostLoop.start);
 
 			patchJump(exitJump);
 			emitByte(OpCode::POP);
 
-			innermostLoopStart = surroundingLoopStart;
-			innermostLoopScopeDepth = surroundingLoopScopeDepth;
-			innermostLoopSelect = surroundingLoopStart;
+			std::memcpy(&surroundingLoop, &innermostLoop, sizeof innermostLoop);
 		}
 
 		void emitLoop(std::size_t loopStart) {
 			emitByte(OpCode::LOOP);
 
-			std::size_t offset = compilingChunk.code.size() - loopStart + 1;
+			std::size_t offset = currentChunk().code.size() - loopStart + 1;
 			if (offset > std::numeric_limits<std::size_t>::max()) error("Loop body too large.");
 
 			emitByte(offset);
@@ -587,34 +667,34 @@ namespace Lox {
 			emitByte(instruction);
 			emitByte(std::numeric_limits<std::size_t>::max());
 			//emitByte(0xff);
-			return compilingChunk.code.size() - 1;
+			return currentChunk().code.size() - 1;
 		}
 
 		void patchJump(int offset) {
 			// -2 to adjust for the bytecode for the jump offset itself.
-			int jump = compilingChunk.code.size() - offset - 1;
-
-			/*/if (jump > UINT16_MAX) {
+			int jump = currentChunk().code.size() - offset - 1;
+#ifdef OVER_MAX_JUMP_DISTANCE
+			/ if (jump > UINT16_MAX) {
 				error("Too much code to jump over.");
-			}*/
-
-			compilingChunk.code[offset] = jump;
+			}
+#endif
+			currentChunk().code[offset] = jump;
 		}
 
 		void endScope() {
-			compiler.scopeDepth--;
+			current->scopeDepth--;
 
-			while (compiler.localCount > 0 &&
-				compiler.locals[compiler.localCount - 1].depth >
-				compiler.scopeDepth) {
+			while (current->localCount > 0 &&
+				current->locals[current->localCount - 1].depth >
+				current->scopeDepth) {
 				emitByte(OpCode::POP);
-				compiler.localCount--;
+				current->localCount--;
 			}
 
 		}
 
 		void beginScope() {
-			compiler.scopeDepth++;
+			current->scopeDepth++;
 		}
 
 		void block() {
@@ -650,7 +730,7 @@ namespace Lox {
 			emitByte(OpCode::PRINT);
 		}
 
-		bool compile(const char* source) {
+		Function* compile(const char* source) {
 			scanner = Scanner{ source };
 			advance();
 			while (!match(TokenType::eof)) {
@@ -658,27 +738,36 @@ namespace Lox {
 			}
 			/*expression();
 			consume(TokenType::eof, "Expect end of expression.");*/
-			endCompiler();
-			return !parser.hadError;
+			Function* func = endCompiler();
+			return parser.hadError ? nullptr : func;
 		}
 
-		void endCompiler() {
+		Function* endCompiler() {
 			emitReturn();
+			Function* func = current->func.get();
+#ifdef DEBUG_PRINT_CODE
+			if (!parser.hadError) {
+				disassembleChunk(currentChunk(), !func->name.empty()
+					? func->name : "<script>");
+			}
+#endif
+			current = current->enclosing;
+			return func;
 		}
 
 		void emitReturn() {
+			emitByte(OpCode::NIL);
 			emitByte(OpCode::RETURN);
 		}
 
 		template<class ...Ts, std::enable_if_t<(... && std::is_convertible_v<Ts, code_t>), int> = 0>
 		void emitBytes(const Ts & ...ts) {
 			(emitByte(ts), ...);
-			///emitByte(byte2);
 		}
 
 		void emitByte(const code_t& byte) {
-			if (std::holds_alternative<OpCode>(byte)) previousOp = compilingChunk.code.size();
-			compilingChunk.write(byte, parser.previous.line);
+			if (std::holds_alternative<OpCode>(byte)) previousOp = currentChunk().code.size();
+			currentChunk().write(byte, parser.previous.line);
 		}
 
 		void push(const value_t& value) {
@@ -693,26 +782,35 @@ namespace Lox {
 			return stack[--stackTop];
 		}
 
-		auto interpret() {
-			return run(compilingChunk);
+		interpretResult  interpret(const char* source) {
+			auto func = compile(source);
+			if (func == nullptr) return interpretResult::COMPILE_ERROR;
+			push(current->func);
+			call(func, 0);
+			return run();
 		}
 
-		value_t peek(int distance) {
+		value_t& peek(int distance) {
 			return stack[stackTop - 1 - distance];
 		}
 
-		template<class ... Ts, std::enable_if_t<(... && std::is_convertible_v<Ts, const char*>), int> = 0>
+		template<class ... Ts>
 		void runtimeError(const char* format, Ts ... args) {
-			std::cerr << string_format(format, args...);
-			std::cerr << "\n";
-			size_t instruction = ip - 1;
-			int line = compilingChunk.lines[instruction];
-			std::cerr << string_format("[line %d] in script\n", line);
+			std::cerr << string_format(format, args...) << "\n";
+			for (auto i = frameCount - 1; i >= 0; i--) {
+				CallFrame* frame = &frames[i];
+				auto func = frame->func;
+				size_t instruction = frame->ip - 1;
+				int line = func->chunk.lines[instruction];
+				std::cerr << string_format("[line %d] in %s\n", line,
+					func->name.empty() ? "script" : std::string(func->name).c_str());
+			}
 			resetStack();
 		}
 
 		void resetStack() {
 			stackTop = 0;
+			frameCount = 0;
 		}
 
 		bool isFalsey(const value_t& value) {
@@ -727,8 +825,12 @@ namespace Lox {
 			else return false;		// Unreachable.
 		}
 
-		interpretResult run(Chunk& chunk) {
-#define DEBUG_TRACE_EXECUTION 1
+		interpretResult run() {
+			CallFrame* frame = &frames[frameCount - 1];
+			auto chunk = [&]()->Chunk& {return frame->func->chunk; };
+			auto read_byte = [&]() {return std::get<std::size_t>(chunk().code[frame->ip++]); };
+			value_t* var_ptr = nullptr;
+#define DEBUG_TRACE_EXECUTION 0
 #define ONLYPRINTCODE 0
 #define BINARY_OP(op) \
 do { \
@@ -743,75 +845,81 @@ push(a op b); \
 
 			for (;;) {
 #if ONLYPRINTCODE
-				ip = Debug::disassembleInstruction(chunk, ip);
-				if (ip + 1 >= compilingChunk.code.size()) {
+				frame->ip = Debug::disassembleInstruction(chunk(), frame->ip);
+				if (frame->ip + 1 > currentChunk().code.size()) {
 					return interpretResult::OK;
 				}
 				continue;
 #else
 
 #if DEBUG_TRACE_EXECUTION
-				std::cout << "          ";
+				std::cout << "\n          ";
 				for (std::size_t index = 0; index < stackTop; ++index) {
 					std::cout << "[" << stack[index] << "]";
 				}
 				std::cout << "\n";
-				Debug::disassembleInstruction(chunk, ip);
+				Debug::disassembleInstruction(chunk(), frame->ip);
 #endif
-				auto instruction = chunk.code[ip++];
+				auto instruction = chunk().code[frame->ip++];
 				if (std::holds_alternative<OpCode>(instruction))
 					switch (std::get<OpCode>(instruction)) {
 					case OpCode::CONSTANT: {
-						auto constant = chunk.values[std::get<std::size_t>(chunk.code[ip++])];
+						auto constant = chunk().values[read_byte()];
 						push(constant);
 						break;
 					}
 					case OpCode::NIL: push(nullptr); break;
 					case OpCode::TRUE: push(true); break;
 					case OpCode::FALSE: push(false); break;
+					case OpCode::POP: pop(); break;
+					case OpCode::INC: {
+						if (var_ptr != nullptr) {
+							auto arg= read_byte();
+							int prefix = (arg & 2) >> 1, neg = arg & 1 ? -1 : 1;
+							auto& top = peek(0);
+							if (std::holds_alternative<double>(top) && std::holds_alternative<double>(*var_ptr)) {
+								std::get<double>(*var_ptr) += neg;
+								if (prefix) std::get<double>(top) += neg;
+							}
+						}
+						break;
+					}
+					case OpCode::GET_LOCAL: {
+						auto slot = read_byte();
+						var_ptr = &stack[frame->slots + slot];
+						push(stack[frame->slots + slot]);
+						break;
+					}
+					case OpCode::SET_LOCAL: {
+						auto slot = read_byte();
+						stack[frame->slots + slot] = peek(0);
+						break;
+					}
 					case OpCode::DEFINE_GLOBAL: {
-						auto name = std::string_view{
-							std::get<std::string>(chunk.values[std::get<std::size_t>(chunk.code[ip++])])
-						};
+						auto name = std::string_view{ std::get<std::string>(chunk().values[read_byte()]) };
 						globals[name] = peek(0);
 						pop();
 						break;
 					}
-					case OpCode::POP: pop(); break;
-					case OpCode::GET_LOCAL: {
-						auto slot = std::get<std::size_t>(chunk.code[ip++]);
-						push(stack[slot]);
-						break;
-					}
-					case OpCode::SET_LOCAL: {
-						auto slot = std::get<std::size_t>(chunk.code[ip++]);
-						stack[slot] = peek(0);
-						break;
-					}
 					case OpCode::GET_GLOBAL: {
-						auto name = std::string_view{
-							std::get<std::string>(chunk.values[std::get<std::size_t>(chunk.code[ip++])])
-						};
+						auto name = std::string_view{ std::get<std::string>(chunk().values[read_byte()]) };
 						auto value = globals.find(name);
 						if (value == globals.end()) {
 							runtimeError("Undefined variable '%s'.", name.data());
 							return interpretResult::RUNTIME_ERROR;
 						}
+						var_ptr = &value->second;
 						push(value->second);
 						break;
 					}
 					case OpCode::SET_GLOBAL: {
-						auto name = std::string_view{
-						std::get<std::string>(chunk.values[std::get<std::size_t>(chunk.code[ip++])])
-						};
+						auto name = std::string_view{ std::get<std::string>(chunk().values[read_byte()]) };
 						auto value = globals.find(name);
 						if (value == globals.end()) {
 							runtimeError("Undefined variable '%s'.", name.data());
 							return interpretResult::RUNTIME_ERROR;
 						}
-						else {
-							globals[name] = peek(0);
-						}
+						else globals[name] = peek(0);
 						break;
 					}
 					case OpCode::EQUAL: {
@@ -844,23 +952,39 @@ push(a op b); \
 						break;
 					}
 					case OpCode::JUMP: {
-						auto offset = std::get<std::size_t>(chunk.code[ip++]);
-						ip += offset;
+						auto offset = read_byte();
+						frame->ip += offset;
 						break;
 					}
 					case OpCode::JUMP_IF_FALSE: {
-						auto offset = std::get<std::size_t>(chunk.code[ip++]);
-						if (isFalsey(peek(0))) ip += offset;
+						auto offset = read_byte();
+						if (isFalsey(peek(0))) frame->ip += offset;
 						break;
 					}
 					case OpCode::LOOP: {
-						auto offset = std::get<std::size_t>(chunk.code[ip++]);
-						ip -= offset;
+						auto offset = read_byte();
+						frame->ip -= offset;
+						break;
+					}
+					case OpCode::CALL: {
+						auto argCount = read_byte();
+						if (!callValue(peek(argCount), argCount)) {
+							return  interpretResult::RUNTIME_ERROR;
+						}
+						frame = &frames[frameCount - 1];
 						break;
 					}
 					case OpCode::RETURN: {
-						//	std::cout << pop() << "\n";
-						return interpretResult::OK;
+						auto result = pop();
+						frameCount--;
+						if (frameCount == 0) {
+							pop();
+							return interpretResult::OK;
+						}
+						stackTop = frame->slots - 1;
+						push(result);
+						frame = &frames[frameCount - 1];
+						break;
 					}
 					}
 #endif

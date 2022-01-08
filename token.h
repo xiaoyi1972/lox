@@ -28,11 +28,15 @@ namespace Lox {
 		JUMP,
 		JUMP_IF_FALSE,
 		LOOP,
+		CALL,
+		INC,
+		DEC,
 		RETURN
 	};
 
+	class Function;
 	using code_t = std::variant<OpCode, std::size_t>;
-	using value_t = std::variant<double, bool, std::string, std::nullptr_t>;
+	using value_t = std::variant<double, bool, std::string, std::nullptr_t, std::shared_ptr<Function>>;
 
 	struct Chunk {
 		void write(const code_t& byte, std::size_t line) {
@@ -46,6 +50,17 @@ namespace Lox {
 		std::vector<code_t> code;
 		std::vector<std::size_t> lines;
 		std::vector<value_t> values;
+	};
+
+	enum struct FunctionType {
+		FUNCTION,
+		SCRIPT
+	};
+
+	struct Function {
+		int arity = 0;
+		Chunk chunk;
+		std::string_view name;
 	};
 
 	enum struct TokenType {
@@ -83,7 +98,14 @@ namespace std {
 			[&](double arg) {out << "num| " << arg; },
 			[&](bool arg) {out << "bool| " << (arg ? "true" : "false"); },
 			[&](const std::string& arg) {out << "str| " << arg; },
-			[&](std::nullptr_t arg) {out << "none| nil"; }
+			[&](std::nullptr_t arg) {out << "none| nil"; },
+			[&](const std::shared_ptr<Lox::Function>& arg) {
+				if (arg->name.empty()) {
+				out << "<script>";
+				return;
+				}
+				out << "<fn " << arg->name << ">";
+			}
 			}, value
 		);
 		return out;
@@ -99,7 +121,12 @@ namespace std {
 			},
 		[&](bool arg) {return std::string{(arg ? "true" : "false")}; },
 		[&](const std::string& arg) {return arg; },
-		[&](std::nullptr_t arg) {return std::string{}; }
+		[&](std::nullptr_t arg) {return std::string{}; },
+		[&](const std::shared_ptr<Lox::Function>& arg) {
+					std::string str = std::to_string(arg);
+					str += "<fn " + std::string(arg->name) + ">";
+					return str;
+				}
 			}, value
 		);
 	}
