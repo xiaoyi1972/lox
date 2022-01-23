@@ -51,6 +51,7 @@ namespace Lox {
 				case OpCode::JUMP:return jumpInstruction("OP_JUMP", 1, chunk, offset);
 				case OpCode::JUMP_IF_FALSE:return jumpInstruction("OP_JUMP_IF_FALSE", 1, chunk, offset);
 				case OpCode::LOOP:return jumpInstruction("OP_LOOP", -1, chunk, offset);
+				case OpCode::CLOSE_UPVALUE:return simpleInstruction("OP_CLOSE_UPVALUE", offset);
 				case OpCode::RETURN: return simpleInstruction("OP_RETURN", offset);
 				case OpCode::CONSTANT: return constantInstruction("OP_CONSTANT", chunk, offset);
 				case OpCode::NIL:return simpleInstruction("OP_NIL", offset);
@@ -71,8 +72,21 @@ namespace Lox {
 				case OpCode::DIVIDE:return simpleInstruction("OP_DIVIDE", offset);
 				case OpCode::NOT:return simpleInstruction("OP_NOT", offset);
 				case OpCode::INC:return incInstruction("OP_INC", chunk, offset);
-				case OpCode::DEC:return constantInstruction("OP_DEC", chunk, offset);
 				case OpCode::CALL: return byteInstruction("OP_CALL", chunk, offset);
+				case OpCode::GET_UPVALUE: return byteInstruction("OP_GET_UPVALUE", chunk, offset);
+				case OpCode::SET_UPVALUE:return byteInstruction("OP_SET_UPVALUE", chunk, offset);
+				case OpCode::CLOSURE: {
+					offset++;
+					auto constant = std::get<std::size_t>(chunk.code[offset++]);
+					std::cout << string_format("%-17s %4d ", "OP_CLOSURE", constant) << (chunk.values[constant]) << "\n";
+					auto function = std::get<std::shared_ptr<Function>>(std::get<Object>(chunk.values[constant]));
+					for (int j = 0; j < function->upvalueCount; j++) {
+						int isLocal = std::get<std::size_t>(chunk.code[offset++]);
+						int index = std::get<std::size_t>(chunk.code[offset++]);
+						std::cout << string_format("%04d      |                      %s %d\n", offset - 2, isLocal ? "local" : "upvalue", index);
+					}
+					return offset;
+				}
 				default:
 					std::cout << "unknown opcode" << static_cast<int>(std::get<OpCode>(instruction));
 					return offset + 1;
@@ -84,6 +98,7 @@ namespace Lox {
 				return offset + 1;
 			}
 		}
+
 
 		static void disassembleChunk(Chunk& chunk, const char* name) {
 			std::cout << "== " << name << " == \n";

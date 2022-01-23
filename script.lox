@@ -1,9 +1,15 @@
-fun fib(n)
-{
-  if (n <= 0)  return 0;
-  elif (n == 1)  return 1;
-  else  return fib(n - 1) + fib(n - 2);
+fun outer() {
+  var x = "value";
+  fun middle() {
+    fun inner() {
+      print x;
+    }
+    print "create inner closure";
+    return inner;
+  }
+  print "return from outer";
+  return middle;
 }
-
-for(var a=0;a<=30;a++)
-print fib(a);
+var mid = outer();
+var in = mid();
+in();

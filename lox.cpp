@@ -1,10 +1,22 @@
 ﻿#include<iostream>
 #include<string>
 #include<fstream>
+#include<chrono>
 #include"common.h"
 
+
 #define Compile_chapter 3
-#define USE_FILE 3
+#define USE_FILE 2
+
+void hello() {
+	std::cout << "hello world\n";
+}
+
+template <typename T>
+void print_arity(T t) {
+	std::cout << "arity is: " << Lox::details::function_traits<T>::arity << "\n";
+}
+
 int main()
 {
 #if Compile_chapter == 1 //chapter 1
@@ -53,13 +65,28 @@ int main()
 #endif
 		using namespace Lox;
 		VM vm;
+		using namespace Lox::details;
+		vm.defineNative(
+		     create_nativeFunc("clock",
+				[]() {
+					auto stap = std::chrono::high_resolution_clock::now();
+					return double(std::chrono::time_point_cast<std::chrono::milliseconds>(stap).time_since_epoch().count());
+				}),
+			create_nativeFunc("hello", hello)
+			);
 		vm.interpret(input.c_str());
 	}
 #endif
 #if Compile_chapter == -1
-	int a = 2, b;
-	b = a++;
-	std::cout << "a:" << a << " b:" << b;
+	{
+		using namespace Lox::details;
+		auto args_count = create_external_function(
+			"add", 
+			[](double a, double b) {
+				return a + b;
+			}
+		);
+	}
 #endif
 	return 1;
 }

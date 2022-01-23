@@ -12,14 +12,17 @@ namespace Lox {
 	struct Local {
 		Token name;
 		int depth;
-		Local(const Token& _name, int _depth) :name(_name), depth(_depth) {}
+		bool isCaptured;
+		Local(const Token& _name, int _depth, bool _isCaptured = false) :
+			name(_name), depth(_depth), isCaptured(_isCaptured) {}
 	};
 
 	struct CallFrame {
-		Function* func = nullptr;
+		Closure* closure = nullptr;
 		std::size_t  ip = 0;
 		std::size_t  slots = 0;
 	};
+
 
 	struct Compiler {
 		Compiler* enclosing;
@@ -27,8 +30,10 @@ namespace Lox {
 		FunctionType type;
 		std::vector<Local> locals;
 		int localCount;
+		static constexpr std::size_t COUNT_MAX = 100;
+		std::array<Upvalue, COUNT_MAX > upvalues;
 		int scopeDepth;
-		Compiler(Compiler* previous = nullptr) :enclosing(previous == nullptr ? this : previous),
+		Compiler(Compiler* previous = nullptr) :enclosing(previous),
 			func(new Function), type(FunctionType::SCRIPT), localCount(0), scopeDepth(0) {}
 	};
 
@@ -38,11 +43,10 @@ namespace Lox {
 		};
 
 		struct { int start = -1; int scopeDepth = 0; int select = 0; } innermostLoop;
-		std::size_t stackTop;
 		static constexpr std::size_t FRAMES_MAX = 64;
 		std::array<CallFrame, FRAMES_MAX> frames{};
 		int frameCount = 0;
-		std::vector<value_t> stack;
+		Stack stack;
 		Parser parser;
 		Scanner scanner{ nullptr };
 		std::unordered_map<std::string_view, value_t> globals;
@@ -50,8 +54,9 @@ namespace Lox {
 		Compiler* current = &rootCompiler;
 		rule_t<VM>  rules;
 		std::optional<size_t> previousOp;
+		std::shared_ptr<ObjUpvalue> openUpvalues = nullptr;
 
-		VM() :stackTop(0), rules(ParseRuleHelp<VM>(allTokenType{})) {}
+		VM() :rules(ParseRuleHelp<VM>(allTokenType{})) {}
 
 		Chunk& currentChunk() {
 			return current->func->chunk;
@@ -139,8 +144,7 @@ namespace Lox {
 		}
 
 		void number(bool canAssign) {
-			double value = std::atof(parser.previous.lexem.data());
-			emitConstant(value);
+			emitConstant(std::atof(parser.previous.lexem.data()));
 		}
 
 		void grouping(bool canAssign) {
@@ -233,7 +237,8 @@ namespace Lox {
 			emitBytes(OpCode::CALL, argCount);
 		}
 
-		bool call(Function* func, int argCount) {
+		bool call(Closure* closure, int argCount) {
+			auto func = closure->function;
 			if (argCount != func->arity) {
 				runtimeError("Expected %d arguments but got %d.", func->arity, argCount);
 				return false;
@@ -245,18 +250,38 @@ namespace Lox {
 			}
 
 			CallFrame* frame = &frames[frameCount++];
-			frame->func = func;
+			frame->closure = closure;
 			frame->ip = 0;
-			frame->slots = stackTop - argCount;
+			frame->slots = stack.top - argCount;
 			return true;
 		}
 
 		bool callValue(value_t& callee, int argCount) {
-			if (std::holds_alternative<std::shared_ptr<Function>>(callee)) {
-				return call(std::get<std::shared_ptr<Function>>(callee).get(), argCount);
+			if (std::holds_alternative<Object>(callee)) {
+				auto& obj = std::get<Object>(callee);
+				if (std::holds_alternative<std::shared_ptr<Closure>>(obj)) {
+					return call(std::get<std::shared_ptr<Closure>>(obj).get(), argCount);
+				}
+				else if (std::holds_alternative<std::shared_ptr<NativeFn>>(obj)) {
+				auto nativeFunc = std::get<std::shared_ptr<NativeFn>>(obj).get();
+				if (argCount != nativeFunc->arity) {
+					runtimeError("Expected %d arguments but got %d.", nativeFunc->arity, argCount);
+					return false;
+				}
+				auto result = nativeFunc->func(stack, stack.top - nativeFunc->arity);
+				stack.top -= argCount + 1;
+				if (result.has_value()) stack.push(*result);
+				return true;
+			}
 			}
 			runtimeError("Can only call functions and classes.");
 			return false;
+		}
+
+		template<class ...Ts, std::enable_if_t<(... && std::is_convertible_v<Ts, const NativeFn&>), int> = 0>
+		void defineNative(const Ts & ...function) {
+			auto callee = [this](auto&& arg) {globals[arg.name] = std::make_shared<NativeFn>(arg); };
+			(callee(function), ...);
 		}
 
 		std::size_t argumentList() {
@@ -299,8 +324,14 @@ namespace Lox {
 			consume(TokenType::left_brace, "Expect '{' before function body.");
 			block();
 
-			Function* func = endCompiler();
-			emitBytes(OpCode::CONSTANT, makeConstant(compiler.func));
+			endCompiler();
+
+			emitBytes(OpCode::CLOSURE, makeConstant(compiler.func));
+
+			for (int i = 0; i < compiler.func->upvalueCount; i++) {
+				emitByte(compiler.upvalues[i].isLocal ? 1 : 0);
+				emitByte(compiler.upvalues[i].index);
+			}
 		}
 
 		void declaration() {
@@ -401,9 +432,9 @@ namespace Lox {
 			namedVariable(parser.previous, canAssign);
 		}
 
-		int resolveLocal(const Token& name) {
-			for (int i = current->localCount - 1; i >= 0; i--) {
-				auto& local = current->locals[i];
+		int resolveLocal(Compiler* compiler, const Token& name) {
+			for (int i = compiler->localCount - 1; i >= 0; i--) {
+				auto& local = compiler->locals[i];
 				if (name.lexem == local.name.lexem) {
 					if (local.depth == -1) {
 						error("Can't read local variable in its own initializer.");
@@ -414,12 +445,85 @@ namespace Lox {
 			return -1;
 		}
 
+		int resolveUpvalue(Compiler* compiler, const Token& name) {
+			if (compiler->enclosing == nullptr) 
+				return -1;
+			int local = resolveLocal(compiler->enclosing, name);
+			if (local != -1) {
+				compiler->enclosing->locals[local].isCaptured = true;
+				return addUpvalue(compiler, local, true);
+			}
+			int upvalue = resolveUpvalue(compiler->enclosing, name);
+			if (upvalue != -1) {
+				return addUpvalue(compiler, upvalue, false);
+			}
+			return -1;
+		}
+
+		int addUpvalue(Compiler* compiler, std::size_t index, bool isLocal) {
+			int upvalueCount = compiler->func->upvalueCount;
+			for (int i = 0; i < upvalueCount; i++) {
+				Upvalue* upvalue = &compiler->upvalues[i];
+				if (upvalue->index == index && upvalue->isLocal == isLocal) {
+					return i;
+				}
+			}
+
+			if (upvalueCount == Compiler::COUNT_MAX) {
+				error("Too many closure variables in function.");
+				return 0;
+			}
+
+			compiler->upvalues[upvalueCount].isLocal = isLocal;
+			compiler->upvalues[upvalueCount].index = index;
+			return compiler->func->upvalueCount++;
+		}
+
+		std::shared_ptr<ObjUpvalue> captureUpvalue(std::size_t local) {
+			std::shared_ptr<ObjUpvalue> prevUpvalue = nullptr;
+			auto upvalue = openUpvalues;
+			while (upvalue != nullptr && upvalue->location > local) {
+				prevUpvalue = upvalue;
+				upvalue = upvalue->next;
+			}
+
+			if (upvalue != nullptr && upvalue->location == local) {
+				return upvalue;
+			}
+
+			auto createdUpvalue = std::make_shared<ObjUpvalue>(local);
+			createdUpvalue->next = upvalue;
+
+			if (prevUpvalue == nullptr) {
+			 openUpvalues = createdUpvalue;
+			}
+			else {
+				prevUpvalue->next = createdUpvalue;
+			}
+
+			return createdUpvalue;
+		}
+
+		void closeUpvalues(std::size_t  last) {
+			while (openUpvalues != nullptr &&
+				openUpvalues->location >= last) {
+				auto upvalue = openUpvalues;
+				upvalue->closed = stack[upvalue->location];
+				openUpvalues = upvalue->next;
+			}
+		}
+
 		void namedVariable(const Token& name, bool canAssign) {
 			code_t arg; // = identifierConstant(name);
 			code_t getOp, setOp;
-			if (auto localIndex = resolveLocal(name); localIndex != -1) {
+			auto localIndex = resolveLocal(current,name);
+			if (localIndex != -1) {
 				arg = static_cast<std::size_t>(localIndex);
 				getOp = OpCode::GET_LOCAL, setOp = OpCode::SET_LOCAL;
+			}
+			else if ((localIndex = resolveUpvalue(current, name)) != -1) {
+				arg = static_cast<std::size_t>(localIndex);
+				getOp = OpCode::GET_UPVALUE, setOp = OpCode::SET_UPVALUE;
 			}
 			else {
 				arg = identifierConstant(name);
@@ -578,7 +682,7 @@ namespace Lox {
 
 			if (exitJump != -1) {
 				patchJump(exitJump);
-				emitByte(OpCode::POP);	// Condition.
+				emitByte(OpCode::POP); // Condition.
 			}
 
 			std::memcpy(&innermostLoop, &surroundingLoop, sizeof innermostLoop);
@@ -618,7 +722,7 @@ namespace Lox {
 		void whileStatement() {
 
 			decltype (innermostLoop) surroundingLoop;
-			std::memcpy(&surroundingLoop ,&innermostLoop, sizeof innermostLoop);
+			std::memcpy(&surroundingLoop, &innermostLoop, sizeof innermostLoop);
 			innermostLoop.start = currentChunk().code.size();
 			innermostLoop.scopeDepth = current->scopeDepth;
 
@@ -687,7 +791,13 @@ namespace Lox {
 			while (current->localCount > 0 &&
 				current->locals[current->localCount - 1].depth >
 				current->scopeDepth) {
-				emitByte(OpCode::POP);
+				if (current->locals[current->localCount - 1].isCaptured) {
+					emitByte(OpCode::CLOSE_UPVALUE);
+				}
+				else {
+					emitByte(OpCode::POP);
+				}
+				//emitByte(OpCode::POP);
 				current->localCount--;
 			}
 
@@ -730,7 +840,7 @@ namespace Lox {
 			emitByte(OpCode::PRINT);
 		}
 
-		Function* compile(const char* source) {
+		std::optional<std::shared_ptr<Function>> compile(const char* source) {
 			scanner = Scanner{ source };
 			advance();
 			while (!match(TokenType::eof)) {
@@ -738,19 +848,20 @@ namespace Lox {
 			}
 			/*expression();
 			consume(TokenType::eof, "Expect end of expression.");*/
-			Function* func = endCompiler();
-			return parser.hadError ? nullptr : func;
+			auto func = std::move(endCompiler());
+			return parser.hadError ? std::optional<std::shared_ptr<Function>>(std::nullopt) : func;
 		}
 
-		Function* endCompiler() {
+		std::shared_ptr<Function> endCompiler() {
 			emitReturn();
-			Function* func = current->func.get();
+			auto func = current->func;
 #ifdef DEBUG_PRINT_CODE
 			if (!parser.hadError) {
 				disassembleChunk(currentChunk(), !func->name.empty()
 					? func->name : "<script>");
 			}
 #endif
+			if (current->enclosing != nullptr)
 			current = current->enclosing;
 			return func;
 		}
@@ -771,27 +882,26 @@ namespace Lox {
 		}
 
 		void push(const value_t& value) {
-			++stackTop;
-			if (stackTop > stack.size())
-				stack.emplace_back(value);
-			else
-				stack[stackTop - 1] = value;
+			stack.push(value);
 		}
 
 		value_t pop() {
-			return stack[--stackTop];
+			return stack.pop();
 		}
 
 		interpretResult  interpret(const char* source) {
 			auto func = compile(source);
-			if (func == nullptr) return interpretResult::COMPILE_ERROR;
+			if (!func.has_value()) return interpretResult::COMPILE_ERROR;
 			push(current->func);
-			call(func, 0);
+			auto closure = std::make_shared<Closure>(*func);
+			pop();
+			push(closure);
+			call(closure.get(), 0);
 			return run();
 		}
 
 		value_t& peek(int distance) {
-			return stack[stackTop - 1 - distance];
+			return stack[stack.top - 1 - distance];
 		}
 
 		template<class ... Ts>
@@ -799,7 +909,7 @@ namespace Lox {
 			std::cerr << string_format(format, args...) << "\n";
 			for (auto i = frameCount - 1; i >= 0; i--) {
 				CallFrame* frame = &frames[i];
-				auto func = frame->func;
+				auto func = frame->closure->function;
 				size_t instruction = frame->ip - 1;
 				int line = func->chunk.lines[instruction];
 				std::cerr << string_format("[line %d] in %s\n", line,
@@ -809,7 +919,7 @@ namespace Lox {
 		}
 
 		void resetStack() {
-			stackTop = 0;
+			stack.reset();
 			frameCount = 0;
 		}
 
@@ -821,25 +931,25 @@ namespace Lox {
 			if (a.index() != b.index()) return false;
 			if (std::holds_alternative<bool>(a)) return std::get<bool>(a) == std::get<bool>(b);
 			else if (std::holds_alternative<std::nullptr_t>(a)) return true;
-			else if (std::holds_alternative<double>(a)) return std::get<double>(a) == std::get<double>(b);
+			else if (std::holds_alternative<num>(a)) return std::get<num>(a) == std::get<num>(b);
 			else return false;		// Unreachable.
 		}
 
 		interpretResult run() {
 			CallFrame* frame = &frames[frameCount - 1];
-			auto chunk = [&]()->Chunk& {return frame->func->chunk; };
+			auto chunk = [&]()->Chunk& {return frame->closure->function->chunk; };
 			auto read_byte = [&]() {return std::get<std::size_t>(chunk().code[frame->ip++]); };
 			value_t* var_ptr = nullptr;
-#define DEBUG_TRACE_EXECUTION 0
+#define DEBUG_TRACE_EXECUTION 1
 #define ONLYPRINTCODE 0
 #define BINARY_OP(op) \
 do { \
-if(!std::holds_alternative<double>(peek(0)) || !std::holds_alternative<double>(peek(1))){\
+if(!std::holds_alternative<num>(peek(0)) || !std::holds_alternative<num>(peek(1))){\
 runtimeError("Operands must be numbers");\
 return interpretResult::RUNTIME_ERROR;\
 }\
-double b = std::get<double>(pop()); \
-double a = std::get<double>(pop()); \
+num b = std::get<num>(pop()); \
+num a = std::get<num>(pop()); \
 push(a op b); \
 }while (false)
 
@@ -854,8 +964,8 @@ push(a op b); \
 
 #if DEBUG_TRACE_EXECUTION
 				std::cout << "\n          ";
-				for (std::size_t index = 0; index < stackTop; ++index) {
-					std::cout << "[" << stack[index] << "]";
+				for (std::size_t index = 0; index < stack.top; ++index) {
+					std::cout << "|" << stack[index] << "|";
 				}
 				std::cout << "\n";
 				Debug::disassembleInstruction(chunk(), frame->ip);
@@ -874,12 +984,12 @@ push(a op b); \
 					case OpCode::POP: pop(); break;
 					case OpCode::INC: {
 						if (var_ptr != nullptr) {
-							auto arg= read_byte();
+							auto arg = read_byte();
 							int prefix = (arg & 2) >> 1, neg = arg & 1 ? -1 : 1;
 							auto& top = peek(0);
-							if (std::holds_alternative<double>(top) && std::holds_alternative<double>(*var_ptr)) {
-								std::get<double>(*var_ptr) += neg;
-								if (prefix) std::get<double>(top) += neg;
+							if (std::holds_alternative<num>(top) && std::holds_alternative<num>(*var_ptr)) {
+								std::get<num>(*var_ptr) += neg;
+								if (prefix) std::get<num>(top) += neg;
 							}
 						}
 						break;
@@ -942,11 +1052,11 @@ push(a op b); \
 					case OpCode::DIVIDE:   BINARY_OP(/ ); break;
 					case OpCode::NOT: push(isFalsey(pop())); break;
 					case OpCode::NEGATE:
-						if (!std::holds_alternative<double>(peek(0))) {
+						if (!std::holds_alternative<num>(peek(0))) {
 							runtimeError("Operand must be a number.");
 							return interpretResult::RUNTIME_ERROR;
 						}
-						push(-std::get<double>(pop())); break;
+						push(-std::get<num>(pop())); break;
 					case OpCode::PRINT: {
 						std::cout << pop() << "\n";
 						break;
@@ -974,14 +1084,50 @@ push(a op b); \
 						frame = &frames[frameCount - 1];
 						break;
 					}
+					case OpCode::SET_UPVALUE: {
+						auto slot = read_byte();
+						if(std::holds_alternative<std::nullptr_t>(frame->closure->upvalues[slot]->closed))
+						stack[frame->closure->upvalues[slot]->location] = peek(0);
+						else frame->closure->upvalues[slot]->closed = peek(0);
+						break;
+					}
+					case OpCode::GET_UPVALUE: {
+						auto slot = read_byte();
+						if (std::holds_alternative<std::nullptr_t>(frame->closure->upvalues[slot]->closed))
+						push(stack[frame->closure->upvalues[slot]->location]);
+						else push(frame->closure->upvalues[slot]->closed);
+						break;
+					}
+					case OpCode::CLOSE_UPVALUE: {
+						closeUpvalues(stack.top - 1);
+						pop();
+						break;
+					}
+					case OpCode::CLOSURE: {
+						auto function = std::get<std::shared_ptr<Function>>(std::get<Object>(chunk().values[read_byte()]));
+						auto closure = std::make_shared<Closure>(function);
+						for (int i = 0; i < closure->upvalueCount; i++) {
+							auto isLocal = read_byte();
+							auto index = read_byte();
+							if (isLocal) {
+								closure->upvalues[i] = captureUpvalue(frame->slots + index);
+							}
+							else {
+								closure->upvalues[i] = frame->closure->upvalues[index];
+							}
+						}
+						push(closure);
+						break;
+					}
 					case OpCode::RETURN: {
 						auto result = pop();
+						closeUpvalues(frame->slots);
 						frameCount--;
 						if (frameCount == 0) {
 							pop();
 							return interpretResult::OK;
 						}
-						stackTop = frame->slots - 1;
+						stack.top = frame->slots - 1;
 						push(result);
 						frame = &frames[frameCount - 1];
 						break;
