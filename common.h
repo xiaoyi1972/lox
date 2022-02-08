@@ -156,16 +156,7 @@ namespace Lox {
 			TokenType operatorType = parser.previous.type;
 			auto& rule = getRule(operatorType);
 
-			if (operatorType == TokenType::inc || operatorType == TokenType::dec) {
-				if (previousOp) {
-					auto get = std::get<OpCode>(currentChunk().code[*previousOp]);
-					bool isVariable = (get == OpCode::GET_GLOBAL || get == OpCode::GET_LOCAL);
-					if (isVariable) {
-						emitBytes(OpCode::INC, 0 + (operatorType == TokenType::dec ? 1 : 0));
-					}
-					else error("Invalid assignment target.");
-				}
-			}
+			if (any_v(operatorType, TokenType::inc, TokenType::dec)) selfInc<false>(operatorType);
 			else parsePrecedence((Precedence)(static_cast<int>(rule.precedence) + 1));
 
 			switch (operatorType) {
@@ -193,18 +184,23 @@ namespace Lox {
 			switch (operatorType) { // Emit the operator instruction.
 			case TokenType::bang: emitByte(OpCode::NOT); break;
 			case TokenType::minus: emitByte(OpCode::NEGATE); break;
-			case TokenType::inc:
-			case TokenType::dec:
-				if (previousOp) {
-					auto get = std::get<OpCode>(currentChunk().code[*previousOp]);
-					bool isVariable = (get == OpCode::GET_GLOBAL || get == OpCode::GET_LOCAL);
-					if (isVariable) {
-						emitBytes(OpCode::INC, 2 + (operatorType == TokenType::dec ? 1 : 0));
-					}
-					else error("Invalid assignment target.");
-				}
-				break;
+			case TokenType::inc: case TokenType::dec: selfInc(operatorType); break;
 			default: return; // Unreachable.
+			}
+		}
+
+		template<bool infix = true>
+		void selfInc(TokenType operatorType) {
+			if (previousOp) {
+				auto get = std::get<OpCode>(currentChunk().code[*previousOp]);
+				bool isVariable = any_v(get,
+					OpCode::GET_GLOBAL, OpCode::GET_LOCAL, OpCode::GET_UPVALUE) ||
+					(get == OpCode::INC && std::get<std::size_t>(currentChunk().code[*previousOp + 1]) >> 1);
+				if (isVariable) {
+					if constexpr (infix) emitBytes(OpCode::INC, 2 + (operatorType == TokenType::dec ? 1 : 0));
+					else emitBytes(OpCode::INC, 0 + (operatorType == TokenType::dec ? 1 : 0));
+				}
+				else error("Invalid assignment target.");
 			}
 		}
 
@@ -263,16 +259,16 @@ namespace Lox {
 					return call(std::get<std::shared_ptr<Closure>>(obj).get(), argCount);
 				}
 				else if (std::holds_alternative<std::shared_ptr<NativeFn>>(obj)) {
-				auto nativeFunc = std::get<std::shared_ptr<NativeFn>>(obj).get();
-				if (argCount != nativeFunc->arity) {
-					runtimeError("Expected %d arguments but got %d.", nativeFunc->arity, argCount);
-					return false;
+					auto nativeFunc = std::get<std::shared_ptr<NativeFn>>(obj).get();
+					if (argCount != nativeFunc->arity) {
+						runtimeError("Expected %d arguments but got %d.", nativeFunc->arity, argCount);
+						return false;
+					}
+					auto result = nativeFunc->func(stack, stack.top - nativeFunc->arity);
+					stack.top -= argCount + 1;
+					if (result.has_value()) stack.push(*result);
+					return true;
 				}
-				auto result = nativeFunc->func(stack, stack.top - nativeFunc->arity);
-				stack.top -= argCount + 1;
-				if (result.has_value()) stack.push(*result);
-				return true;
-			}
 			}
 			runtimeError("Can only call functions and classes.");
 			return false;
@@ -382,8 +378,10 @@ namespace Lox {
 			}
 			auto& local = current->locals[current->localCount++];
 #endif
-
-			current->locals.emplace_back(name, -1);
+			if (current->localCount >= current->locals.size())
+				current->locals.emplace_back(name, -1);
+			else
+				current->locals[current->localCount] = Local(name, -1);
 			current->localCount++;
 
 #ifdef LIMIT_LOCAL_VARIABLE_COUNT
@@ -446,7 +444,7 @@ namespace Lox {
 		}
 
 		int resolveUpvalue(Compiler* compiler, const Token& name) {
-			if (compiler->enclosing == nullptr) 
+			if (compiler->enclosing == nullptr)
 				return -1;
 			int local = resolveLocal(compiler->enclosing, name);
 			if (local != -1) {
@@ -480,43 +478,44 @@ namespace Lox {
 		}
 
 		std::shared_ptr<ObjUpvalue> captureUpvalue(std::size_t local) {
-			std::shared_ptr<ObjUpvalue> prevUpvalue = nullptr;
-			auto upvalue = openUpvalues;
-			while (upvalue != nullptr && upvalue->location > local) {
+			auto* upvalue = &openUpvalues;
+			decltype(upvalue) prevUpvalue = nullptr;
+			while (*upvalue != nullptr && (*upvalue)->location > local) {
 				prevUpvalue = upvalue;
-				upvalue = upvalue->next;
+				upvalue = &(*upvalue)->next;
 			}
 
-			if (upvalue != nullptr && upvalue->location == local) {
-				return upvalue;
+			if (*upvalue != nullptr && (*upvalue)->location == local) {
+				return *upvalue;
 			}
 
-			auto createdUpvalue = std::make_shared<ObjUpvalue>(local);
-			createdUpvalue->next = upvalue;
+			auto createdUpvalue = std::make_shared<ObjUpvalue>(&stack.value, local);
+			createdUpvalue->next = *upvalue;
 
 			if (prevUpvalue == nullptr) {
-			 openUpvalues = createdUpvalue;
+				openUpvalues = createdUpvalue;
 			}
 			else {
-				prevUpvalue->next = createdUpvalue;
+				(*prevUpvalue)->next = createdUpvalue;
 			}
 
 			return createdUpvalue;
 		}
 
 		void closeUpvalues(std::size_t  last) {
-			while (openUpvalues != nullptr &&
-				openUpvalues->location >= last) {
-				auto upvalue = openUpvalues;
-				upvalue->closed = stack[upvalue->location];
-				openUpvalues = upvalue->next;
+			while (openUpvalues != nullptr && openUpvalues->location >= last) {
+				auto* upvalue = &openUpvalues;
+				(*upvalue)->fork(stack[(*upvalue)->location]);
+				openUpvalues = std::move((*upvalue)->next);
+				if (openUpvalues != nullptr)
+					(*upvalue)->next.reset();
 			}
 		}
 
 		void namedVariable(const Token& name, bool canAssign) {
 			code_t arg; // = identifierConstant(name);
 			code_t getOp, setOp;
-			auto localIndex = resolveLocal(current,name);
+			auto localIndex = resolveLocal(current, name);
 			if (localIndex != -1) {
 				arg = static_cast<std::size_t>(localIndex);
 				getOp = OpCode::GET_LOCAL, setOp = OpCode::SET_LOCAL;
@@ -862,7 +861,7 @@ namespace Lox {
 			}
 #endif
 			if (current->enclosing != nullptr)
-			current = current->enclosing;
+				current = current->enclosing;
 			return func;
 		}
 
@@ -985,19 +984,20 @@ push(a op b); \
 					case OpCode::INC: {
 						if (var_ptr != nullptr) {
 							auto arg = read_byte();
-							int prefix = (arg & 2) >> 1, neg = arg & 1 ? -1 : 1;
+							int prefix = arg >> 1, neg = arg & 1 ? -1 : 1;
 							auto& top = peek(0);
 							if (std::holds_alternative<num>(top) && std::holds_alternative<num>(*var_ptr)) {
 								std::get<num>(*var_ptr) += neg;
 								if (prefix) std::get<num>(top) += neg;
+								else var_ptr = nullptr;
 							}
 						}
 						break;
 					}
 					case OpCode::GET_LOCAL: {
 						auto slot = read_byte();
-						var_ptr = &stack[frame->slots + slot];
 						push(stack[frame->slots + slot]);
+						var_ptr = &stack[frame->slots + slot];
 						break;
 					}
 					case OpCode::SET_LOCAL: {
@@ -1086,16 +1086,13 @@ push(a op b); \
 					}
 					case OpCode::SET_UPVALUE: {
 						auto slot = read_byte();
-						if(std::holds_alternative<std::nullptr_t>(frame->closure->upvalues[slot]->closed))
-						stack[frame->closure->upvalues[slot]->location] = peek(0);
-						else frame->closure->upvalues[slot]->closed = peek(0);
+						frame->closure->upvalues[slot]->value() = peek(0);
 						break;
 					}
 					case OpCode::GET_UPVALUE: {
 						auto slot = read_byte();
-						if (std::holds_alternative<std::nullptr_t>(frame->closure->upvalues[slot]->closed))
-						push(stack[frame->closure->upvalues[slot]->location]);
-						else push(frame->closure->upvalues[slot]->closed);
+						push(frame->closure->upvalues[slot]->value());
+						var_ptr = &frame->closure->upvalues[slot]->value();
 						break;
 					}
 					case OpCode::CLOSE_UPVALUE: {

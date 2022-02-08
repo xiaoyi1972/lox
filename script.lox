@@ -1,15 +1,24 @@
-fun outer() {
-  var x = "value";
-  fun middle() {
-    fun inner() {
-      print x;
+var globalOne;
+var globalTwo;
+
+fun main() {
+  {
+    var a = "one";
+    fun one() {
+      print a;
     }
-    print "create inner closure";
-    return inner;
+    globalOne = one;
   }
-  print "return from outer";
-  return middle;
+
+  {
+    var a = "two";
+    fun two() {
+      print a;
+    }
+    globalTwo = two;
+  }
 }
-var mid = outer();
-var in = mid();
-in();
+
+main();
+globalOne();
+globalTwo();

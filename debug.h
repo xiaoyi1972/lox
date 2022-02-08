@@ -32,7 +32,7 @@ namespace Lox {
 		static int incInstruction(const char* name, Chunk& chunk, int offset) {
 			auto arg = std::get<std::size_t>(chunk.code[offset + 1]);
 			auto prefix = (arg & 2) >> 1, neg = arg & 1;
-			std::cout << string_format("%-17s %4s %s\n", name, neg ? "-" : "+", prefix ? "prefix" : "postfix");
+			std::cout << string_format("%-17s %4s %s\n", name, neg ? "-" : "+", prefix ? "prefix" : "suffix");
 			return offset + 2;
 		}
 

@@ -6,7 +6,7 @@
 #include "tool.h"
 namespace Lox {
 	enum struct OpCode {
-		CONSTANT, 
+		CONSTANT,
 		NIL, TRUE, FALSE,
 		POP,
 		GET_LOCAL, SET_LOCAL,
@@ -26,7 +26,7 @@ namespace Lox {
 	struct NativeFn;
 	struct Function;
 	struct Closure;
-	using Object = std::variant<std::shared_ptr<Function>, std::shared_ptr<NativeFn>,std::shared_ptr<Closure>>;
+	using Object = std::variant<std::shared_ptr<Function>, std::shared_ptr<NativeFn>, std::shared_ptr<Closure>>;
 	using code_t = std::variant<OpCode, std::size_t>;
 	using value_t = std::variant<num, bool, std::string, std::nullptr_t, Object>;
 
@@ -37,7 +37,7 @@ namespace Lox {
 		Stack() :top(0) {}
 		void reset() { top = 0; }
 		void push(const value_t& v) {
-			if (++top > value.size()) 
+			if (++top > value.size())
 				value.emplace_back(v);
 			else value[top - 1] = v;
 		}
@@ -46,6 +46,10 @@ namespace Lox {
 	};
 
 	struct Chunk {
+		std::vector<code_t> code;
+		std::vector<std::size_t> lines;
+		std::vector<value_t> values;
+
 		void write(const code_t& byte, std::size_t line) {
 			code.emplace_back(byte);
 			lines.emplace_back(line);
@@ -54,9 +58,6 @@ namespace Lox {
 			values.emplace_back(value);
 			return values.size() - 1;
 		}
-		std::vector<code_t> code;
-		std::vector<std::size_t> lines;
-		std::vector<value_t> values;
 	};
 
 	enum struct FunctionType {
@@ -78,16 +79,30 @@ namespace Lox {
 
 	struct ObjUpvalue {
 		std::size_t location;
-		value_t closed;
+		std::vector<value_t>* closed;
 		std::shared_ptr<ObjUpvalue>  next;
-		ObjUpvalue(std::size_t _location) :location(_location), closed(nullptr), next(nullptr) {}
+		std::vector<value_t>* out;
+
+		ObjUpvalue(std::vector<value_t>* ptr, std::size_t _location = 0) :
+			location(_location), closed(ptr), next(nullptr), out(ptr) {}
+		~ObjUpvalue() {
+			if (closed != out) delete closed;
+		}
+		void fork(const value_t& val) {
+			location = 0;
+			closed = new std::vector<value_t>(1, val);
+		}
+		value_t& value() {
+			return (*closed)[location];
+		}
 	};
 
-	struct Closure{
+	struct Closure {
 		std::shared_ptr<Function> function;
 		std::vector<std::shared_ptr<ObjUpvalue>> upvalues;
 		int upvalueCount;
-		Closure(const std::shared_ptr<Function> &_function) : function(_function), 
+
+		Closure(const std::shared_ptr<Function>& _function) : function(_function),
 			upvalueCount(_function->upvalueCount),
 			upvalues(_function->upvalueCount, nullptr) {}
 	};
@@ -99,14 +114,10 @@ namespace Lox {
 	};
 
 	namespace details {
-		template<class T>
-		struct function_traits : public function_traits<decltype(&std::remove_reference_t<T>::operator())> {};
-		template<class R, class C, class...Ts>
-		struct function_traits<R(C::*)(Ts...) const> :public function_traits<R(*)(Ts...)> {};
-		template<class R, class C, class...Ts>
-		struct function_traits<R(C::*)(Ts...)> :public function_traits<R(*)(Ts...)> {};
-		template<class R, class... Ts>
-		struct function_traits<R(*)(Ts...)> :public function_traits<R(Ts...)> {};
+		template<class T>struct function_traits : public function_traits<decltype(&std::remove_reference_t<T>::operator())> {};
+		template<class R, class C, class...Ts>struct function_traits<R(C::*)(Ts...) const> :public function_traits<R(*)(Ts...)> {};
+		template<class R, class C, class...Ts>struct function_traits<R(C::*)(Ts...)> :public function_traits<R(*)(Ts...)> {};
+		template<class R, class... Ts>struct function_traits<R(*)(Ts...)> :public function_traits<R(Ts...)> {};
 		template<class R, class...Ts>struct function_traits<R(Ts...)> {
 			using result_type = R;
 			using arg_tuple = std::tuple<Ts...>;

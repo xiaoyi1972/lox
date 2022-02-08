@@ -15,3 +15,7 @@ std::string string_format(const std::string& format, Args ... args)
 	return std::string(buf.get(), buf.get() + size - 1); // We don't want the '\0' inside
 }
 
+template<class T, class ...Ts, std::enable_if_t<(... && std::is_convertible_v<Ts, T>), int> = 0>
+bool any_v(const T& value, const Ts & ...ts) {
+	return ((value == ts) || ...);
+}

@@ -58,7 +58,7 @@ int main()
 			std::string s(std::istreambuf_iterator<char>(fs), {});
 			input = std::move(s);
 			fs.close();
-}
+		}
 		std::cout << input << "\n\n";
 #else
 		std::getline(std::cin, input);
@@ -67,13 +67,13 @@ int main()
 		VM vm;
 		using namespace Lox::details;
 		vm.defineNative(
-		     create_nativeFunc("clock",
+			create_nativeFunc("clock",
 				[]() {
 					auto stap = std::chrono::high_resolution_clock::now();
 					return double(std::chrono::time_point_cast<std::chrono::milliseconds>(stap).time_since_epoch().count());
 				}),
 			create_nativeFunc("hello", hello)
-			);
+					);
 		vm.interpret(input.c_str());
 	}
 #endif
@@ -81,7 +81,7 @@ int main()
 	{
 		using namespace Lox::details;
 		auto args_count = create_external_function(
-			"add", 
+			"add",
 			[](double a, double b) {
 				return a + b;
 			}
