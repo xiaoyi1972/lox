@@ -1,24 +1,19 @@
-var globalOne;
-var globalTwo;
-
-fun main() {
-  {
-    var a = "one";
-    fun one() {
-      print a;
-    }
-    globalOne = one;
+class Doughnut {
+  cook() {
+    print "Dunk in the fryer.";
+    this.finish("sprinkles");
   }
 
-  {
-    var a = "two";
-    fun two() {
-      print a;
-    }
-    globalTwo = two;
+  finish(ingredient) {
+    print "Finish with " + ingredient;
   }
 }
 
-main();
-globalOne();
-globalTwo();
+class Cruller < Doughnut {
+  finish(ingredient) {
+    // No sprinkles, always icing.
+    super.finish("icing");
+  }
+}
+
+Cruller().finish("sprinkles");
