@@ -1,0 +1,10 @@
+cmake_minimum_required(VERSION 3.10) 
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+SET(EXECUTABLE_OUTPUT_PATH ../) 
+#message("${PROJECT_SOURCE_DIR}")
+project(Lox) 
+
+aux_source_directory(../ ALL_SRCS)
+add_executable(lox ${ALL_SRCS})
