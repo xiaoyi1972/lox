@@ -9,6 +9,8 @@
 #include "scanner.h"
 
 namespace Lox {
+	static std::string initString("init");
+
 	struct Local {
 		Token name;
 		int depth;
@@ -27,7 +29,6 @@ namespace Lox {
 	struct Compiler {
 		static constexpr std::size_t COUNT_MAX = 100;
 		static constexpr std::size_t FRAMES_MAX = 64;
-		static constexpr std::string_view initString = "init";
 		Compiler* enclosing;
 		std::shared_ptr<Fn> func;
 		FunctionType type;
@@ -36,7 +37,6 @@ namespace Lox {
 		int localCount, scopeDepth;
 		Parser parser;
 		Scanner scanner{ nullptr };
-		Compiler* current;
 		rule_t<Compiler> rules;
 		std::optional<size_t> previousOp;
 
@@ -52,18 +52,22 @@ namespace Lox {
 			int select = 0;
 		} *currentLoop = nullptr;
 
-		Compiler(Compiler* previous = nullptr,
-			FunctionType _type = FunctionType::SCRIPT)
-			: enclosing(previous), func(new Fn), type(_type), locals(1),
-			localCount(1), scopeDepth(0),
-			rules(ParseRuleHelp<Compiler>(allTokenType{})), current(this) {
-			if (type != FunctionType::FUNCTION)
-				locals.front().name.lexem = "this";
-			else
-				locals.front().name.lexem = "";
+		Compiler() :Compiler(nullptr, FunctionType::SCRIPT) {
+			enclosing = this;
 		}
 
-		Chunk& currentChunk() { return current->func->chunk; }
+		Compiler(Compiler* previous,
+			FunctionType _type)
+			: enclosing(previous), func(new Fn), type(_type), locals(1),
+			localCount(1), scopeDepth(0),
+			rules(ParseRuleHelp<Compiler>(allTokenType{})) {
+			if (type != FunctionType::FUNCTION)
+				locals.front().name.lexeme = "this";
+			else
+				locals.front().name.lexeme = "";
+		}
+
+		Chunk& currentChunk() { return enclosing->func->chunk; }
 
 		auto& getRule(TokenType type) {
 			return rules[static_cast<std::size_t>(type)];
@@ -84,11 +88,11 @@ namespace Lox {
 			else if (token.type == TokenType::error) { // Nothing.
 			}
 			else {
-				std::cerr << string_format(" at '%.*s'", token.lexem.size(),
-					token.lexem.data());
+				std::cerr << string_format(" at '%.*s'", token.lexeme.size(),
+					token.lexeme.data());
 			}
-			std::cerr << string_format(": %s\n", message, token.lexem.size(),
-				token.lexem.data());
+			std::cerr << string_format(": %s\n", message, token.lexeme.size(),
+				token.lexeme.data());
 			parser.hadError = true;
 		}
 
@@ -121,7 +125,7 @@ namespace Lox {
 				parser.current = scanner.scanToken();
 				if (parser.current.type != TokenType::error)
 					break;
-				errorAtCurrent(parser.current.lexem.data());
+				errorAtCurrent(parser.current.lexeme.data());
 			}
 		}
 
@@ -151,11 +155,11 @@ namespace Lox {
 
 		void string(bool canAssign) {
 			emitConstant(std::string{
-				parser.previous.lexem.substr(1, parser.previous.lexem.size() - 2) });
+				parser.previous.lexeme.substr(1, parser.previous.lexeme.size() - 2) });
 		}
 
 		void number(bool canAssign) {
-			emitConstant(std::atof(parser.previous.lexem.data()));
+			emitConstant(std::atof(parser.previous.lexeme.data()));
 		}
 
 		void grouping(bool canAssign) {
@@ -293,12 +297,11 @@ namespace Lox {
 		}
 
 		void function(FunctionType type) {
-			Compiler compiler(current, type);
-			current = &compiler;
-			// compiler.type = type;
+			Compiler compiler(enclosing, type);
+			enclosing = &compiler;
 
 			if (type != FunctionType::SCRIPT) {
-				current->func->name = parser.previous.lexem;
+				enclosing->func->name = parser.previous.lexeme;
 			}
 
 			beginScope();
@@ -306,8 +309,8 @@ namespace Lox {
 			consume(TokenType::left_paren, "Expect '(' after function name.");
 			if (!check(TokenType::right_paren)) {
 				do {
-					current->func->arity++;
-					if (current->func->arity > 255) {
+					enclosing->func->arity++;
+					if (enclosing->func->arity > 255) {
 						errorAtCurrent("Can't have more than 255 parameters.");
 					}
 					auto constant = parseVariable("Expect parameter name.");
@@ -345,9 +348,9 @@ namespace Lox {
 				synchronize();
 		}
 
-		Token syntheticToken(const std::string_view& text) {
+		Token syntheticToken(const std::string& text) {
 			Token token;
-			token.lexem = text;
+			token.lexeme = text;
 			return token;
 		}
 
@@ -422,7 +425,7 @@ namespace Lox {
 			consume(TokenType::identifier, "Expect method name.");
 			auto constant = identifierConstant(parser.previous);
 			FunctionType type = FunctionType::METHOD;
-			if (parser.previous.lexem == Compiler::initString) {
+			if (parser.previous.lexeme == initString) {
 				type = FunctionType::INITIALIZER;
 			}
 			function(type);
@@ -459,18 +462,18 @@ namespace Lox {
 		code_t parseVariable(const char* errorMessage) {
 			consume(TokenType::identifier, errorMessage);
 			declareVariable();
-			if (current->scopeDepth > 0)
+			if (enclosing->scopeDepth > 0)
 				return static_cast<std::size_t>(0);
 			return identifierConstant(parser.previous);
 		}
 
 		void declareVariable() {
-			if (current->scopeDepth == 0)
+			if (enclosing->scopeDepth == 0)
 				return;
 			auto& name = parser.previous;
-			for (int i = current->localCount - 1; i >= 0; i--) {
-				auto& local = current->locals[i];
-				if (local.depth != -1 && local.depth < current->scopeDepth) {
+			for (int i = enclosing->localCount - 1; i >= 0; i--) {
+				auto& local = enclosing->locals[i];
+				if (local.depth != -1 && local.depth < enclosing->scopeDepth) {
 					break;
 				}
 
@@ -482,32 +485,32 @@ namespace Lox {
 		}
 
 		bool identifiersEqual(const Token& a, const Token& b) {
-			return a.lexem == b.lexem;
+			return a.lexeme == b.lexeme;
 		}
 
 		void addLocal(const Token& name) {
 #ifdef LIMIT_LOCAL_VARIABLE_COUNT
-			if (current->localCount == 50) {
+			if (enclosing->localCount == 50) {
 				error("Too many local variables in function.");
 				return;
 			}
-			auto& local = current->locals[current->localCount++];
+			auto& local = enclosing->locals[enclosing->localCount++];
 #endif
-			if (current->localCount >= current->locals.size())
-				current->locals.emplace_back(name, -1);
+			if (enclosing->localCount >= enclosing->locals.size())
+				enclosing->locals.emplace_back(name, -1);
 			else
-				current->locals[current->localCount] = Local(name, -1);
-			current->localCount++;
+				enclosing->locals[enclosing->localCount] = Local(name, -1);
+			enclosing->localCount++;
 
 #ifdef LIMIT_LOCAL_VARIABLE_COUNT
 			local.name = name;
 			local.depth = -1;
-			local.depth = current->scopeDepth;
+			local.depth = enclosing->scopeDepth;
 #endif
 		}
 
 		code_t identifierConstant(const Token& name) {
-			return makeConstant(std::string{ name.lexem });
+			return makeConstant(name.lexeme);
 		}
 
 		void varDeclaration() {
@@ -529,7 +532,7 @@ namespace Lox {
 		}
 
 		void defineVariable(const code_t& global) {
-			if (current->scopeDepth > 0) {
+			if (enclosing->scopeDepth > 0) {
 				markInitialized();
 				return;
 			}
@@ -537,9 +540,9 @@ namespace Lox {
 		}
 
 		void markInitialized() {
-			if (current->scopeDepth == 0)
+			if (enclosing->scopeDepth == 0)
 				return;
-			current->locals[current->localCount - 1].depth = current->scopeDepth;
+			enclosing->locals[enclosing->localCount - 1].depth = enclosing->scopeDepth;
 		}
 
 		void variable(bool canAssign) { namedVariable(parser.previous, canAssign); }
@@ -547,7 +550,7 @@ namespace Lox {
 		int resolveLocal(Compiler* compiler, const Token& name) {
 			for (int i = compiler->localCount - 1; i >= 0; i--) {
 				auto& local = compiler->locals[i];
-				if (name.lexem == local.name.lexem) {
+				if (name.lexeme == local.name.lexeme) {
 					if (local.depth == -1) {
 						error("Can't read local variable in its own initializer.");
 					}
@@ -558,7 +561,7 @@ namespace Lox {
 		}
 
 		int resolveUpvalue(Compiler* compiler, const Token& name) {
-			if (compiler->enclosing == nullptr)
+			if (compiler->enclosing == nullptr || compiler == this)
 				return -1;
 			auto local = resolveLocal(compiler->enclosing, name);
 			if (local != -1) {
@@ -594,12 +597,12 @@ namespace Lox {
 		void namedVariable(const Token& name, bool canAssign) {
 			code_t arg; // = identifierConstant(name);
 			code_t getOp, setOp;
-			auto localIndex = resolveLocal(current, name);
+			auto localIndex = resolveLocal(enclosing, name);
 			if (localIndex != -1) {
 				arg = static_cast<std::size_t>(localIndex);
 				getOp = OpCode::GET_LOCAL, setOp = OpCode::SET_LOCAL;
 			}
-			else if ((localIndex = resolveUpvalue(current, name)) != -1) {
+			else if ((localIndex = resolveUpvalue(enclosing, name)) != -1) {
 				arg = static_cast<std::size_t>(localIndex);
 				getOp = OpCode::GET_UPVALUE, setOp = OpCode::SET_UPVALUE;
 			}
@@ -695,14 +698,14 @@ namespace Lox {
 		}
 
 		void returnStatement() {
-			if (current->type == FunctionType::SCRIPT) {
+			if (enclosing->type == FunctionType::SCRIPT) {
 				error("Can't return from top-level code.");
 			}
 			if (match(TokenType::semicolon)) {
 				emitReturn();
 			}
 			else {
-				if (current->type == FunctionType::INITIALIZER) {
+				if (enclosing->type == FunctionType::INITIALIZER) {
 					error("Can't return a value from an initializer.");
 				}
 				expression();
@@ -751,7 +754,7 @@ namespace Lox {
 			currentLoop = &loopCompiler;
 
 			currentLoop->start = currentChunk().code.size();
-			currentLoop->scopeDepth = current->scopeDepth;
+			currentLoop->scopeDepth = enclosing->scopeDepth;
 
 			int exitJump = -1;
 			if (!match(TokenType::semicolon)) {
@@ -793,8 +796,8 @@ namespace Lox {
 				return;
 			}
 			consume(TokenType::semicolon, "Expect ';' after 'continue'.");
-			for (auto i = current->localCount - 1;
-				i >= 0 && current->locals[i].depth > currentLoop->scopeDepth; --i) {
+			for (auto i = enclosing->localCount - 1;
+				i >= 0 && enclosing->locals[i].depth > currentLoop->scopeDepth; --i) {
 				emitByte(OpCode::POP);
 			}
 			emitLoop(currentLoop->start); // Jump to top of current innermost loop.
@@ -806,8 +809,8 @@ namespace Lox {
 				return;
 			}
 			consume(TokenType::semicolon, "Expect ';' after 'break'.");
-			for (auto i = current->localCount - 1;
-				i >= 0 && current->locals[i].depth > currentLoop->scopeDepth; --i) {
+			for (auto i = enclosing->localCount - 1;
+				i >= 0 && enclosing->locals[i].depth > currentLoop->scopeDepth; --i) {
 				emitByte(OpCode::POP);
 			}
 
@@ -823,7 +826,7 @@ namespace Lox {
 			currentLoop = &loopCompiler;
 
 			currentLoop->start = currentChunk().code.size();
-			currentLoop->scopeDepth = current->scopeDepth;
+			currentLoop->scopeDepth = enclosing->scopeDepth;
 
 			consume(TokenType::left_paren, "Expect '(' after 'while'.");
 			expression();
@@ -886,23 +889,23 @@ namespace Lox {
 		}
 
 		void endScope() {
-			current->scopeDepth--;
+			enclosing->scopeDepth--;
 
-			while (current->localCount > 0 &&
-				current->locals[current->localCount - 1].depth >
-				current->scopeDepth) {
-				if (current->locals[current->localCount - 1].isCaptured) {
+			while (enclosing->localCount > 0 &&
+				enclosing->locals[enclosing->localCount - 1].depth >
+				enclosing->scopeDepth) {
+				if (enclosing->locals[enclosing->localCount - 1].isCaptured) {
 					emitByte(OpCode::CLOSE_UPVALUE);
 				}
 				else {
 					emitByte(OpCode::POP);
 				}
 				// emitByte(OpCode::POP);
-				current->localCount--;
+				enclosing->localCount--;
 			}
 		}
 
-		void beginScope() { current->scopeDepth++; }
+		void beginScope() { enclosing->scopeDepth++; }
 
 		void block() {
 			while (!check(TokenType::right_brace) && !check(TokenType::eof)) {
@@ -952,21 +955,21 @@ namespace Lox {
 
 		std::shared_ptr<Fn> endCompiler() {
 			emitReturn();
-			auto func = current->func;
+			auto func = enclosing->func;
 #ifdef DEBUG_PRINT_CODE
 			if (!parser.hadError) {
-				disassembleChunk(currentChunk(),
+				disassembleChunk(enclosingChunk(),
 					!func->name.empty() ? func->name : "<script>");
 			}
 #endif
-			if (current->enclosing != nullptr) {
-				current = current->enclosing;
+			if (enclosing->enclosing != nullptr) {
+				enclosing = enclosing->enclosing;
 			}
 			return func;
 		}
 
 		void emitReturn() {
-			if (current->type == FunctionType::INITIALIZER) {
+			if (enclosing->type == FunctionType::INITIALIZER) {
 				emitBytes(OpCode::GET_LOCAL, static_cast<std::size_t>(0));
 			}
 			else {
@@ -993,12 +996,10 @@ namespace Lox {
 		enum struct interpretResult { OK, COMPILE_ERROR, RUNTIME_ERROR };
 
 		static constexpr std::size_t FRAMES_MAX = 64;
-		static constexpr std::string_view initString = "init";
 		std::array<CallFrame, FRAMES_MAX> frames;
 		int frameCount = 0;
 		Stack stack;
-		std::unordered_map<std::string_view, value_t> globals;
-		Compiler compiler;
+		std::unordered_map<std::string, value_t> globals;
 		std::shared_ptr<ObjUpvalue> openUpvalues = nullptr;
 
 		template <class... Ts> void runtimeError(const char* format, Ts... args) {
@@ -1073,7 +1074,7 @@ namespace Lox {
 						auto klass = arg;
 						auto instance = std::make_shared<Instance>(std::move(klass));
 						stack[stack.top - argCount - 1] = std::move(instance);
-						if (auto it = klass->methods.find(VM::initString);
+						if (auto it = klass->methods.find(initString);
 							it != klass->methods.end()) {
 							auto& initializer =
 								std::get<std::shared_ptr<Closure>>(it->second);
@@ -1097,24 +1098,22 @@ namespace Lox {
 				callee);
 		}
 
-		template <class... Ts,
-			std::enable_if_t<
-			(... && std::is_convertible_v<Ts, const NativeFn&>), int> = 0>
-			void defineNative(const Ts &...function) {
+		template <class... Args>
+		void defineNative(std::pair<const char*, Args> &&... function) {
 			auto callee = [this](auto&& arg) {
 				globals[arg.name] = std::make_shared<NativeFn>(arg);
 			};
-			(callee(function), ...);
+			(callee(Lox::details::create_nativeFunc<VM>(function.first, function.second)), ...);
 		}
 
 		void defineMethod(const std::string& name) {
 			auto method = peek(0);
 			auto klass = std::get<std::shared_ptr<Class>>(peek(1));
-			klass->methods[std::string_view{ name }] = method;
+			klass->methods[name] = method;
 			pop();
 		}
 
-		bool bindMethod(Class* klass, const std::string_view& name) {
+		bool bindMethod(Class* klass, const std::string& name) {
 			value_t method;
 			if (auto it = klass->methods.find(name); it != klass->methods.end())
 				method = it->second;
@@ -1138,7 +1137,7 @@ namespace Lox {
 			}
 
 			auto instance = std::get<std::shared_ptr<Instance>>(receiver).get();
-			if (auto it = instance->fields.find(std::string_view{ name });
+			if (auto it = instance->fields.find(name);
 				it != instance->fields.end()) {
 				auto& value = it->second;
 				stack[stack.top - argCount - 1] = value;
@@ -1149,7 +1148,7 @@ namespace Lox {
 		}
 
 		bool invokeFromClass(Class* klass, const std::string& name, int argCount) {
-			if (auto it = klass->methods.find(std::string_view{ name });
+			if (auto it = klass->methods.find(name);
 				it != klass->methods.end()) {
 				auto method = std::get<std::shared_ptr<Closure>>(it->second).get();
 				return call(method, argCount);
@@ -1205,6 +1204,7 @@ namespace Lox {
 		}
 
 		interpretResult interpret(const char* source) {
+			Compiler compiler;
 			auto func = compiler.compile(source);
 			if (!func.has_value())
 				return interpretResult::COMPILE_ERROR;
@@ -1223,7 +1223,7 @@ namespace Lox {
 				return std::get<std::size_t>(chunk().code[frame->ip++]);
 			};
 			value_t* var_ptr = nullptr;
-#define DEBUG_TRACE_EXECUTION 1
+#define DEBUG_TRACE_EXECUTION 0
 #define ONLYPRINTCODE 0
 #define BINARY_OP(op) \
   do { \
@@ -1305,15 +1305,16 @@ namespace Lox {
 						break;
 					}
 					case OpCode::DEFINE_GLOBAL: {
-						auto name = std::string_view{
-							std::get<std::string>(chunk().values[read_byte()]) };
-						globals[name] = peek(0);
+						auto& name = std::get<std::string>(chunk().values[read_byte()]);
+						if (!globals.try_emplace(name, peek(0)).second) {
+							runtimeError("Already a variable named '%s' in this scope.", name.data());
+							return interpretResult::RUNTIME_ERROR;
+						}
 						pop();
 						break;
 					}
 					case OpCode::GET_GLOBAL: {
-						auto name = std::string_view{
-							std::get<std::string>(chunk().values[read_byte()]) };
+						auto& name = std::get<std::string>(chunk().values[read_byte()]);
 						auto value = globals.find(name);
 						if (value == globals.end()) {
 							runtimeError("Undefined variable '%s'.", name.data());
@@ -1324,8 +1325,7 @@ namespace Lox {
 						break;
 					}
 					case OpCode::SET_GLOBAL: {
-						auto name = std::string_view{
-							std::get<std::string>(chunk().values[read_byte()]) };
+						auto& name = std::get<std::string>(chunk().values[read_byte()]);
 						auto value = globals.find(name);
 						if (value == globals.end()) {
 							runtimeError("Undefined variable '%s'.", name.data());
@@ -1455,8 +1455,7 @@ namespace Lox {
 							return interpretResult::RUNTIME_ERROR;
 						}
 						auto instance = std::get<std::shared_ptr<Instance>>(peek(0));
-						auto name = std::string_view{
-							std::get<std::string>(chunk().values[read_byte()]) };
+						auto& name = std::get<std::string>(chunk().values[read_byte()]);
 						if (auto it = instance->fields.find(name);
 							it != instance->fields.end()) {
 							pop(); // Instance.
@@ -1475,8 +1474,7 @@ namespace Lox {
 							return interpretResult::RUNTIME_ERROR;
 						}
 						auto instance = std::get<std::shared_ptr<Instance>>(peek(1));
-						auto name = std::string_view{
-							std::get<std::string>(chunk().values[read_byte()]) };
+						auto& name = std::get<std::string>(chunk().values[read_byte()]);
 						instance->fields[name] = peek(0);
 						auto value = pop();
 						pop();
@@ -1510,7 +1508,7 @@ namespace Lox {
 					case OpCode::GET_SUPER: {
 						auto& name = std::get<std::string>(chunk().values[read_byte()]);
 						auto superclass = std::get<std::shared_ptr<Class>>(pop()).get();
-						if (!bindMethod(superclass, std::string_view(name))) {
+						if (!bindMethod(superclass, std::string(name))) {
 							return interpretResult::RUNTIME_ERROR;
 						}
 						break;

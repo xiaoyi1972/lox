@@ -24,7 +24,7 @@ namespace Lox {
 		Token makeToken(TokenType type) {
 			Token token{};
 			token.type = type;
-			token.lexem = std::string_view{ start }.substr(0, current - start);
+			token.lexeme = std::string_view{ start }.substr(0, current - start);
 			token.line = line;
 			return token;
 		}
@@ -32,7 +32,7 @@ namespace Lox {
 		Token errorToken(const char* message) {
 			Token token{};
 			token.type = TokenType::error;
-			token.lexem = message;
+			token.lexeme = message;
 			token.line = line;
 			return token;
 		}

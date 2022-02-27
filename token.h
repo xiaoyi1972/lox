@@ -50,9 +50,9 @@ namespace Lox {
 		GET_SUPER,
 	};
 
-	template <class... T> struct ObjListImpl {
-		using type = std::variant<std::shared_ptr<T>...>;
-	};
+	//template <class... T> struct ObjListImpl {
+		//using type = std::variant<std::shared_ptr<T>...>;
+	//};
 
 	using num = double;
 	struct NativeFn;
@@ -62,11 +62,11 @@ namespace Lox {
 	struct Instance;
 	struct BoundMethod;
 	using Obj =
-		ObjListImpl<Fn, NativeFn, Closure, Class, Instance, BoundMethod>::type;
+		ObjListImpl_t<Fn, NativeFn, Closure, Class, Instance, BoundMethod>;
 	using code_t = std::variant<OpCode, std::size_t>;
 	using value_t =
-		concatenator<std::variant<num, bool, std::string, std::nullptr_t>,
-		Obj>::type;
+		concatenator_t<std::variant<num, bool, std::string, std::nullptr_t>,
+		Obj>;
 
 	struct Stack {
 		std::size_t top;
@@ -115,7 +115,7 @@ namespace Lox {
 		std::size_t arity = 0;
 		std::size_t upvalueCount = 0;
 		Chunk chunk;
-		std::string_view name;
+		std::string name;
 	};
 
 	struct ObjUpvalue {
@@ -139,14 +139,14 @@ namespace Lox {
 
 	struct Class {
 		std::string name;
-		std::unordered_map<std::string_view, value_t> methods;
+		std::unordered_map<std::string, value_t> methods;
 
 		Class(const std::string& _name) : name(_name) {}
 	};
 
 	struct Instance {
 		std::shared_ptr<Class> klass;
-		std::unordered_map<std::string_view, value_t> fields;
+		std::unordered_map<std::string, value_t> fields;
 
 		Instance(const std::shared_ptr<Class>& _klass) : klass(_klass) {}
 	};
@@ -170,10 +170,14 @@ namespace Lox {
 	};
 
 	struct VM;
-	struct NativeFn {
+	struct NativeFn{
 		std::function<void(VM* vm, std::size_t)> func;
-		std::string_view name;
+		std::string name;
 		std::size_t arity;
+
+		NativeFn(const decltype(func)& _func, const char* _name,
+			decltype(arity) _arity)
+			: func(_func), name(_name), arity(_arity) {}
 	};
 
 	namespace details {
@@ -233,15 +237,16 @@ namespace Lox {
 			}
 		};
 
-		template <class R, class... Args> auto call_impl(std::function<R(Args...)> f) {
-			return[f = std::move(f)](VM* vm, std::size_t arity) {
+		template <class T, class R, class... Args>
+		auto call_impl(std::function<R(Args...)> f) {
+			return[f = std::move(f)](T* vm, std::size_t arity) {
 				if constexpr (std::is_same<R, void>::value) {
-					unpacker<VM, R, std::tuple<>, std::tuple<Args...>>()(vm, arity, f,
+					unpacker<T, R, std::tuple<>, std::tuple<Args...>>()(vm, arity, f,
 						std::tuple<>());
 					vm->stack.top -= arity;
 				}
 				else {
-					R retval = unpacker<VM, R, std::tuple<>, std::tuple<Args...>>()(
+					R retval = unpacker<T, R, std::tuple<>, std::tuple<Args...>>()(
 						vm, arity, f, std::tuple<>());
 					if constexpr (std::is_convertible<R, value_t>::value) {
 						vm->stack.top -= arity + 1;
@@ -255,13 +260,18 @@ namespace Lox {
 			};
 		}
 
-		template <class F> auto create_nativeFunc(const char* name, F f) {
+		template <class T, class F> auto create_nativeFunc(const char* name, F f) {
 			using traits = function_traits<F>;
 			auto fn = lambda_to_func_impl(f, std::make_index_sequence<traits::arity>{},
 				traits{});
-			return NativeFn{ call_impl(fn), name, traits::arity };
+			return NativeFn{ call_impl<T>(fn), name, traits::arity };
 		}
+
+		template <class... Args> struct Fn_impl : std::pair<Args...> {
+			Fn_impl(Args... args) : std::pair<Args...>(args...) {}
+		};
 	}
+
 
 	enum struct TokenType {
 		// Single-character tokens.
@@ -324,7 +334,7 @@ namespace Lox {
 
 	struct Token {
 		TokenType type;
-		std::string_view lexem;
+		std::string lexeme;
 		int line;
 	};
 }

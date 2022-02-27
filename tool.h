@@ -39,3 +39,12 @@ template <class... T, class... U>
 struct concatenator<std::variant<T...>, std::variant<U...>> {
 	using type = std::variant<T..., U...>;
 };
+
+template <class T, class... U>
+using concatenator_t = typename concatenator<T, U...>::type;
+
+template <class... T> struct ObjListImpl {
+	using type = std::variant<std::shared_ptr<T>...>;
+};
+
+template <class... T> using ObjListImpl_t = typename ObjListImpl<T...>::type;

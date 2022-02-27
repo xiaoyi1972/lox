@@ -4,78 +4,62 @@
 #include <iostream>
 #include <string>
 
-#define Compile_chapter 3
-#define USE_FILE 2
+#define USE_FILE 0
 
-void hello() { std::cout << "hello Lox!\n"; }
-
-int main() {
-#if Compile_chapter == 1 // chapter 1
+int main(int argc, char** argv) {
+#ifndef Test
     {
-        using namespace Lox;
-        Chunk chunk{};
-        chunk.write(OpCode::CONSTANT, 123);
-        chunk.write(chunk.addConstant(1.2), 123);
-        chunk.write(OpCode::NEGATE, 123);
-        chunk.write(OpCode::RETURN, 123);
-        //	Debug::disassembleChunk(chunk, "test chunk");
-        VM vm{ chunk };
-        vm.interpret();
-    }
-#elif Compile_chapter == 2 // chapter 2
-    {
-        std::string input;
-#if USE_FILE
-        if (std::ifstream fs{ "./script.lox", std::ios::binary }) {
-            std::string s(std::istreambuf_iterator<char>(fs), {});
-            input = std::move(s);
-            fs.close();
-        }
-        std::cout << input << "\n\n";
-#else
-        std::getline(std::cin, input);
-#endif
-        using namespace Lox;
-        Chunk ck; // Debug::disassembleChunk(chunk, "test chunk");
-        VM vm(ck);
-        // vm.compile(input.c_str());
-        vm.interpret(input.c_str());
-    }
-#elif Compile_chapter == 3 // chapter 2
-    {
-        std::string input;
-#if USE_FILE
-        if (std::ifstream fs{ "./script.lox", std::ios::binary }) {
-            std::string s(std::istreambuf_iterator<char>(fs), {});
-            input = std::move(s);
-            fs.close();
-        }
-        std::cout << input << "\n\n";
-#else
-        std::getline(std::cin, input);
-#endif
         using namespace Lox;
         VM vm;
         using namespace Lox::details;
-        vm.defineNative(
-            create_nativeFunc("clock",
-                []() {
-                    auto stap = std::chrono::high_resolution_clock::now();
-                    return double(
-                        std::chrono::time_point_cast<std::chrono::milliseconds>(stap)
-                        .time_since_epoch()
-                        .count());
-                }),
-            create_nativeFunc("hello", hello));
+        vm.defineNative(Fn_impl("clock", []() {
+            auto stap = std::chrono::high_resolution_clock::now();
+            return double(
+                std::chrono::time_point_cast<std::chrono::milliseconds>(stap)
+                .time_since_epoch()
+                .count());
+            }));
+        std::string input;
+#if USE_FILE
+        std::string path = __FILE__;
+        path = path.substr(0, path.find_last_of("/\\") + 1) + "script.lox";
+        if (std::ifstream fs{ path, std::ios::binary }) {
+            std::string s(std::istreambuf_iterator<char>(fs), {});
+            input = std::move(s);
+            fs.close();
+        }
+        std::cout << input << "\n\n";
+#else
+        if (argc == 1) {
+            static constexpr auto repl = [](auto&& vm, auto&& input) {
+                for (;;) {
+                    std::cout << ("> ");
+                    if (!std::getline(std::cin, input)) {
+                        std::cout << ("\n");
+                        break;
+                    }
+                    vm.interpret(input.c_str());
+                }
+            };
+            repl(vm, input);
+        }
+        else if (argc == 2) {
+            if (std::ifstream fs{ argv[1], std::ios::binary }) {
+                std::string s(std::istreambuf_iterator<char>(fs), {});
+                input = std::move(s);
+                fs.close();
+                std::cout << input << "\n\n";
+            }
+        }
+        else {
+            std::cerr << "Usage: clox [path]\n";
+            exit(64);
+        }
+#endif
         vm.interpret(input.c_str());
     }
-#endif
-#if Compile_chapter == -1
-    {
-        using namespace Lox::details;
-        auto args_count = create_external_function(
-            "add", [](double a, double b) { return a + b; });
-    }
+#else
+
 #endif
     return 1;
 }
